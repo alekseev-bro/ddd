@@ -9,6 +9,7 @@ import (
 
 	"fmt"
 
+	"github.com/alekseev-bro/ddd/pkg/qos"
 	"github.com/alekseev-bro/ddd/pkg/store"
 
 	"github.com/alekseev-bro/ddd/internal/serde"
@@ -23,26 +24,22 @@ import (
 type messageCount uint
 
 const (
-	snapshotSize     messageCount  = 100
-	snapshotInterval time.Duration = time.Second * 1
+	snapshotSize      messageCount  = 100
+	snapshotInterval  time.Duration = time.Second * 1
+	idempotancyWindow time.Duration = time.Minute * 2
 )
 
 type ID[T any] string
 
-func (i ID[T]) String() string {
+type Serder serde.Serder
 
-	return string(i)
-}
-
-func NewID[T any]() ID[T] {
+func (*aggregate[T]) NewID() ID[T] {
 	a, err := uuid.NewV7()
 	if err != nil {
 		panic(err)
 	}
 	return ID[T](a.String())
 }
-
-type Serder serde.Serder
 
 // Default is JSON
 func SetTypeEncoder(s Serder) {
@@ -54,7 +51,8 @@ func NewIdempotencyKey[T any](id ID[T], key string) string {
 	if err != nil {
 		panic(err)
 	}
-	return uuid.NewMD5(i, []byte(key)).String()
+
+	return uuid.NewSHA1(i, []byte(key)).String()
 }
 
 type option[T any] func(a *aggregate[T])
@@ -65,9 +63,8 @@ type snapshotThreshold struct {
 }
 
 // WithSnapshotThreshold sets the threshold for snapshotting.
-//
-//	numMsgs is the number of messages to accumulate before snapshotting,
-//	 and interval is the minimum time interval between snapshots.
+// numMsgs is the number of messages to accumulate before snapshotting,
+// and the interval is the minimum time interval between snapshots.
 func WithSnapshotThreshold[T any](numMsgs byte, interval time.Duration) option[T] {
 	return func(a *aggregate[T]) {
 		a.snapshotThreshold.numMsgs = numMsgs
@@ -96,17 +93,17 @@ type Envelope struct {
 	Payload []byte
 }
 
-type executer[T any] interface {
-	Execute(ctx context.Context, idempotencyKey string, command Command[T], opts ...commandOption) error
-	// CommandFunc(ctx context.Context, command func(*T) Event[T]) error
+type Executer[T any] interface {
+	Execute(ctx context.Context, idempotencyKey string, command Command[T], opts ...commandOption) (CommandID[T], error)
 }
-type projector[T any] interface {
+type Projector[T any] interface {
 	Project(ctx context.Context, h EventHandler[T], opts ...ProjOption) (Drainer, error)
 }
 
 type Aggregate[T any] interface {
-	projector[T]
-	executer[T]
+	Projector[T]
+	Executer[T]
+	NewID() ID[T]
 }
 
 type registry interface {
@@ -138,6 +135,7 @@ type aggregate[T any] struct {
 	snapshotThreshold snapshotThreshold
 	es                eventStream[T]
 	ss                snapshotStore[T]
+	qos               qos.QoS
 	pubsub            *nats.Conn
 }
 
@@ -157,7 +155,7 @@ func (a *aggregate[T]) build(ctx context.Context, id ID[T]) (*snapshot[T], error
 
 	var snap snapshot[T]
 
-	rec, err := a.ss.Load(ctx, id.String())
+	rec, err := a.ss.Load(ctx, string(id))
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNoSnapshot):
@@ -171,7 +169,7 @@ func (a *aggregate[T]) build(ctx context.Context, id ID[T]) (*snapshot[T], error
 		}
 	}
 
-	envelopes, err := a.es.Load(ctx, id.String(), snap.Version)
+	envelopes, err := a.es.Load(ctx, string(id), snap.Version)
 	if err != nil {
 		if !errors.Is(err, store.ErrNoAggregate) {
 			return nil, fmt.Errorf("buid %w", err)
@@ -223,7 +221,7 @@ func (o *commandOptions) WithWaitProjSync(waitTimeout time.Duration) *commandOpt
 
 type commandOption func(*commandOptions)
 
-func (a *aggregate[T]) Execute(ctx context.Context, idempKey string, command Command[T], opts ...commandOption) error {
+func (a *aggregate[T]) Execute(ctx context.Context, idempKey string, command Command[T], opts ...commandOption) (CommandID[T], error) {
 	o := &commandOptions{
 		waitTimeout:  time.Second,
 		waitProjSync: false,
@@ -231,18 +229,19 @@ func (a *aggregate[T]) Execute(ctx context.Context, idempKey string, command Com
 	for _, opt := range opts {
 		opt(o)
 	}
+	commandUUID := CommandID[T](NewIdempotencyKey(command.AggregateID(), idempKey))
 	var err error
 
 	snap, err := a.build(ctx, command.AggregateID())
 	if err != nil {
-		return fmt.Errorf("build aggrigate: %w", err)
+		return commandUUID, fmt.Errorf("build aggrigate: %w", err)
 	}
 
 	evt := command.Execute(snap.Body)
 
 	if everr, ok := evt.(*EventError[T]); ok {
-		slog.Warn("command execution error", "error", everr.Reason, "aggregate_id", command.AggregateID().String())
-		return nil
+		slog.Warn("command execution error", "error", everr.Reason, "aggregate_id", string(command.AggregateID()))
+		return commandUUID, nil
 	}
 
 	b, err := serde.Serialize(evt)
@@ -254,10 +253,8 @@ func (a *aggregate[T]) Execute(ctx context.Context, idempKey string, command Com
 	// Panics if event isn't registered
 	kind := typereg.GuardType(evt)
 
-	eventUUID := NewIdempotencyKey(command.AggregateID(), idempKey)
-
-	if err := a.es.Save(ctx, command.AggregateID().String(), eventUUID, &Envelope{Version: snap.Version, Payload: b, Kind: kind}); err != nil {
-		return fmt.Errorf("command: %w", err)
+	if err := a.es.Save(ctx, string(command.AggregateID()), string(commandUUID), &Envelope{Version: snap.Version, Payload: b, Kind: kind}); err != nil {
+		return commandUUID, fmt.Errorf("command: %w", err)
 	}
 
 	// Save snapshot if aggregate has more than snapshotThreshold messages
@@ -269,16 +266,16 @@ func (a *aggregate[T]) Execute(ctx context.Context, idempKey string, command Com
 				slog.Warn("snapshot save serialization", "error", err.Error())
 				return
 			}
-			err = a.ss.Save(ctx, command.AggregateID().String(), b)
+			err = a.ss.Save(ctx, string(command.AggregateID()), b)
 			if err != nil {
 				slog.Error("snapshot save", "error", err.Error())
 				return
 			}
-			slog.Info("snapshot saved", "version", snap.Version, "aggregateID", command.AggregateID().String(), "msg_count", snap.MsgCount, "aggregate", reflect.TypeFor[T]().Name())
+			slog.Info("snapshot saved", "version", snap.Version, "aggregateID", string(command.AggregateID()), "msg_count", snap.MsgCount, "aggregate", reflect.TypeFor[T]().Name())
 
 		}()
 
 	}
 
-	return nil
+	return commandUUID, nil
 }

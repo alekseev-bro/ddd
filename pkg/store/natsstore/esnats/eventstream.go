@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/alekseev-bro/ddd/pkg/qos"
 	"github.com/alekseev-bro/ddd/pkg/store"
 	"github.com/alekseev-bro/ddd/pkg/store/natsstore"
 
@@ -34,6 +35,7 @@ const (
 )
 
 type eventStream[T any] struct {
+	dedupe     time.Duration
 	storeType  StoreType
 	partnum    uint8
 	tname      string
@@ -54,7 +56,7 @@ func NewEventStream[T any](ctx context.Context, js jetstream.JetStream, opts ...
 		Subjects:    []string{stream.allSubjects()},
 		Name:        stream.streamName(),
 		Storage:     jetstream.StorageType(stream.storeType),
-		Duplicates:  2 * time.Minute,
+		Duplicates:  stream.dedupe,
 		AllowDirect: true,
 		RePublish: &jetstream.RePublish{
 			Source:      stream.allSubjects(),
@@ -174,21 +176,30 @@ func (d drainList) Drain() error {
 	return nil
 }
 
+func aggrIDFromParams(params *domain.SubscribeParams) string {
+	if params.AggrID != "" {
+		return params.AggrID
+	}
+
+	return "*"
+}
+
 func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *domain.Envelope) error, params *domain.SubscribeParams) (domain.Drainer, error) {
 
 	maxpend := maxAckPending
-	if params.Ordering == domain.Ordered {
+	if params.QoS.Ordering == qos.Ordered {
 		maxpend = 1
 	}
+
 	var filter []string
 	if params.Kind != nil {
 		for _, kind := range params.Kind {
-			filter = append(filter, fmt.Sprintf("%s.%s.%s", e.streamName(), params.AggrID(), kind))
+			filter = append(filter, fmt.Sprintf("%s.%s.%s", e.streamName(), aggrIDFromParams(params), kind))
 		}
 	} else {
-		filter = append(filter, fmt.Sprintf("%s.%s.%s", e.streamName(), params.AggrID(), "*"))
+		filter = append(filter, fmt.Sprintf("%s.%s.%s", e.streamName(), aggrIDFromParams(params), "*"))
 	}
-	if params.QoS == domain.AtMostOnce {
+	if params.QoS.Delivery == qos.AtMostOnce {
 		subs := make(drainList, len(filter))
 		for i, f := range filter {
 			sub, err := e.js.Conn().Subscribe(f, func(msg *nats.Msg) {

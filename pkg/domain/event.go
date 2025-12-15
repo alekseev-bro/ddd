@@ -1,6 +1,6 @@
 package domain
 
-type EventID[T any] = ID[Event[T]]
+type EventID[T any] ID[Event[T]]
 
 // EventError is not saved to the event store.
 type EventError[T any] struct {

@@ -4,48 +4,19 @@ import (
 	"context"
 
 	"github.com/alekseev-bro/ddd/internal/typereg"
-)
-
-type OrderingType uint
-
-const (
-	Ordered OrderingType = iota
-	Unordered
-)
-
-type QoSType uint
-
-const (
-	AtLeastOnce QoSType = iota
-	AtMostOnce
+	"github.com/alekseev-bro/ddd/pkg/qos"
 )
 
 type SubscribeParams struct {
 	DurableName string
-	Ordering    OrderingType
 	Kind        []string
-	aggrID      string
-	QoS         QoSType
+	AggrID      string
+	QoS         qos.QoS
 }
 
-func (s *SubscribeParams) AggrID() string {
-	if s.aggrID != "" {
-		return s.aggrID
-	}
-
-	return "*"
-
-}
-
-func FilterByAggregateID[T any](id ID[T]) ProjOption {
+func WIthFilterByAggregateID[T any](id ID[T]) ProjOption {
 	return func(p *SubscribeParams) {
-		p.aggrID = id.String()
-	}
-}
-
-func WithUnordered() ProjOption {
-	return func(p *SubscribeParams) {
-		p.Ordering = Unordered
+		p.AggrID = string(id)
 	}
 }
 
@@ -62,31 +33,28 @@ func WithName(name string) ProjOption {
 	}
 }
 
-func WithAtMostOnce() ProjOption {
+func WithQoS(qos qos.QoS) ProjOption {
 	return func(p *SubscribeParams) {
-		p.QoS = AtMostOnce
+		p.QoS = qos
 	}
 }
 
 type EventHandler[T any] interface {
-	Handle(ctx context.Context, eventID ID[Event[T]], event Event[T]) error
+	Handle(ctx context.Context, eventID EventID[T], event Event[T]) error
 }
 
 func (a *aggregate[T]) Project(ctx context.Context, h EventHandler[T], opts ...ProjOption) (Drainer, error) {
 	params := &SubscribeParams{
 		DurableName: typereg.TypeNameFrom(h),
-		Ordering:    Ordered,
-		QoS:         AtLeastOnce,
 	}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(params)
 		}
-
 	}
 
 	return a.es.Subscribe(ctx, func(envel *Envelope) error {
 		ev := typereg.GetType(envel.Kind, envel.Payload)
-		return h.Handle(ctx, ID[Event[T]](envel.ID.String()), ev.(Event[T]))
+		return h.Handle(ctx, EventID[T](envel.ID.String()), ev.(Event[T]))
 	}, params)
 }

@@ -8,3 +8,5 @@ type Command[T any] interface {
 type identer[T any] interface {
 	AggregateID() ID[T]
 }
+
+type CommandID[T any] ID[Command[T]]
