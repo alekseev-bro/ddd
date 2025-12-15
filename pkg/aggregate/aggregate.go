@@ -45,7 +45,7 @@ type ID[T any] string
 
 type Serder serde.Serder
 
-func (*aggregate[T]) NewID() ID[T] {
+func (*Root[T]) NewID() ID[T] {
 	a, err := uuid.NewV7()
 	if err != nil {
 		panic(err)
@@ -67,7 +67,7 @@ func NewIdempotencyKey[T any](id ID[T], key string) string {
 	return uuid.NewSHA1(i, []byte(key)).String()
 }
 
-type Option[T any] func(a *aggregate[T])
+type Option[T any] func(a *Root[T])
 
 type snapshotThreshold struct {
 	numMsgs  byte
@@ -78,15 +78,15 @@ type snapshotThreshold struct {
 // numMsgs is the number of messages to accumulate before snapshotting,
 // and the interval is the minimum time interval between snapshots.
 func WithSnapshotThreshold[T any](numMsgs byte, interval time.Duration) Option[T] {
-	return func(a *aggregate[T]) {
+	return func(a *Root[T]) {
 		a.snapshotThreshold.numMsgs = numMsgs
 		a.snapshotThreshold.interval = interval
 	}
 }
 
-func New[T any](ctx context.Context, es eventStream[T], ss snapshotStore[T], opts ...Option[T]) *aggregate[T] {
+func New[T any](ctx context.Context, es eventStream[T], ss snapshotStore[T], opts ...Option[T]) *Root[T] {
 
-	aggr := &aggregate[T]{
+	aggr := &Root[T]{
 		snapshotThreshold: snapshotThreshold{interval: snapshotInterval, numMsgs: byte(snapshotSize)},
 		es:                es,
 		ss:                ss,
@@ -141,7 +141,7 @@ type snapshotStore[T any] interface {
 	Load(ctx context.Context, aggrID string) ([]byte, error)
 }
 
-type aggregate[T any] struct {
+type Root[T any] struct {
 	snapshotThreshold snapshotThreshold
 	es                eventStream[T]
 	ss                snapshotStore[T]
@@ -157,7 +157,7 @@ type snapshot[T any] struct {
 	Body      *T
 }
 
-func (a *aggregate[T]) build(ctx context.Context, id ID[T]) (*snapshot[T], error) {
+func (a *Root[T]) build(ctx context.Context, id ID[T]) (*snapshot[T], error) {
 
 	var snap snapshot[T]
 
@@ -227,7 +227,7 @@ func (o *commandOptions) WithWaitProjSync(waitTimeout time.Duration) *commandOpt
 
 type commandOption func(*commandOptions)
 
-func (a *aggregate[T]) Execute(ctx context.Context, idempKey string, command Command[T], opts ...commandOption) (CommandID[T], error) {
+func (a *Root[T]) Execute(ctx context.Context, idempKey string, command Command[T], opts ...commandOption) (CommandID[T], error) {
 	o := &commandOptions{
 		waitTimeout:  time.Second,
 		waitProjSync: false,

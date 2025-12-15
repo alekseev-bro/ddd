@@ -1,4 +1,4 @@
-package domain
+package natsstore
 
 import (
 	"time"

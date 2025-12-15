@@ -43,7 +43,7 @@ type EventHandler[T any] interface {
 	Handle(ctx context.Context, eventID EventID[T], event Event[T]) error
 }
 
-func (a *aggregate[T]) Project(ctx context.Context, h EventHandler[T], opts ...ProjOption) (Drainer, error) {
+func (a *Root[T]) Project(ctx context.Context, h EventHandler[T], opts ...ProjOption) (Drainer, error) {
 	params := &SubscribeParams{
 		DurableName: typereg.TypeNameFrom(h),
 	}

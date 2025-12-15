@@ -1,4 +1,4 @@
-package saga
+package domain
 
 import (
 	"context"
@@ -33,7 +33,7 @@ func WithOrdering[E aggregate.Event[T], C aggregate.Command[U], T any, U any](ot
 	}
 }
 
-func Step[E aggregate.Event[T], C aggregate.Command[U], T any, U any](ctx context.Context, sub aggregate.Projector[T], cmd aggregate.Executer[U], shf sagaHandlerFunc[E, C, T, U], opts ...sagaOption[E, C, T, U]) {
+func SagaStep[E aggregate.Event[T], C aggregate.Command[U], T any, U any](ctx context.Context, sub aggregate.Projector[T], cmd aggregate.Executer[U], shf sagaHandlerFunc[E, C, T, U], opts ...sagaOption[E, C, T, U]) {
 
 	sh := &sagaHandler[E, C, T, U]{
 		sub:     sub,
