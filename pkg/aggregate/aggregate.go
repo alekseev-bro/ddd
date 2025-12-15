@@ -30,18 +30,18 @@ const (
 	idempotancyWindow time.Duration = time.Minute * 2
 )
 
+// AggregateNameFromType returns the aggregate name and bounded context name from the type T.
 func AggregateNameFromType[T any]() (aname string, bctx string) {
 	t := reflect.TypeFor[T]()
 	if t.Kind() != reflect.Struct {
 		panic("T must be a struct")
 	}
+
 	aname = t.Name()
 	sep := strings.Split(t.PkgPath(), "/")
 	bctx = sep[len(sep)-1]
 	return
 }
-
-type ID[T any] string
 
 type Serder serde.Serder
 
@@ -53,37 +53,45 @@ func (*Root[T]) NewID() ID[T] {
 	return ID[T](a.String())
 }
 
-// Default is JSON
+type ID[T any] string
+
+func (i ID[T]) String() string {
+	return string(i)
+}
+
+func (i ID[T]) UUID() uuid.UUID {
+	u, err := uuid.Parse(string(i))
+	if err != nil {
+		panic(err)
+	}
+	return u
+}
+
+// SetTypeEncoder sets the default encoder for the aggregate,
+// encoder must be a Serder implementation.
+// Default is JSON.
 func SetTypeEncoder(s Serder) {
 	serde.SetDefaultSerder(s)
 }
 
-func NewIdempotencyKey[T any](id ID[T], key string) string {
-	i, err := uuid.Parse(string(id))
+// NewUniqueIdempKeyForEvent creates a new idempotency key for the given aggregate ID and key.
+// ID guarantees uniqueness across all events of the same aggregate.
+func NewUniqueCommandIdempKey[C Command[T], T any](aggrID ID[T]) string {
+	var ev C
+	i, err := uuid.Parse(aggrID.String())
+
 	if err != nil {
 		panic(err)
 	}
-
-	return uuid.NewSHA1(i, []byte(key)).String()
+	return uuid.NewSHA1(i, []byte(typereg.TypeNameFrom(ev))).String()
 }
-
-type Option[T any] func(a *Root[T])
 
 type snapshotThreshold struct {
 	numMsgs  byte
 	interval time.Duration
 }
 
-// WithSnapshotThreshold sets the threshold for snapshotting.
-// numMsgs is the number of messages to accumulate before snapshotting,
-// and the interval is the minimum time interval between snapshots.
-func WithSnapshotThreshold[T any](numMsgs byte, interval time.Duration) Option[T] {
-	return func(a *Root[T]) {
-		a.snapshotThreshold.numMsgs = numMsgs
-		a.snapshotThreshold.interval = interval
-	}
-}
-
+// New creates a new aggregate root using the provided event stream and snapshot store.
 func New[T any](ctx context.Context, es eventStream[T], ss snapshotStore[T], opts ...Option[T]) *Root[T] {
 
 	aggr := &Root[T]{
@@ -107,19 +115,27 @@ type Envelope struct {
 	Payload       []byte
 }
 
+// Executer is an interface that defines the Execute method for executing commands on an aggregate.
+// Each command is executed in a transactional manner, ensuring that the aggregate state is consistent.
+// Commands must implement the Command interface.
 type Executer[T any] interface {
-	Execute(ctx context.Context, idempotencyKey string, command Command[T], opts ...commandOption) (CommandID[T], error)
+	Execute(ctx context.Context, idempotencyKey string, command Command[T]) (CommandID[T], error)
 }
+
+// Projector is an interface that defines the Project method for projecting events on an aggregate.
+// Events must implement the Event interface.
 type Projector[T any] interface {
 	Project(ctx context.Context, h EventHandler[T], opts ...ProjOption) (Drainer, error)
 }
 
+// All aggregates must implement the Aggregate interface.
 type Aggregate[T any] interface {
 	Projector[T]
 	Executer[T]
 	NewID() ID[T]
 }
 
+// Use to drain all open connections
 type Drainer interface {
 	Drain() error
 }
@@ -141,6 +157,7 @@ type snapshotStore[T any] interface {
 	Load(ctx context.Context, aggrID string) ([]byte, error)
 }
 
+// Aggregate root type it implements the Aggregate interface.
 type Root[T any] struct {
 	snapshotThreshold snapshotThreshold
 	es                eventStream[T]
@@ -161,7 +178,7 @@ func (a *Root[T]) build(ctx context.Context, id ID[T]) (*snapshot[T], error) {
 
 	var snap snapshot[T]
 
-	rec, err := a.ss.Load(ctx, string(id))
+	rec, err := a.ss.Load(ctx, id.String())
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNoSnapshot):
@@ -175,7 +192,7 @@ func (a *Root[T]) build(ctx context.Context, id ID[T]) (*snapshot[T], error) {
 		}
 	}
 
-	envelopes, err := a.es.Load(ctx, string(id), snap.Version)
+	envelopes, err := a.es.Load(ctx, id.String(), snap.Version)
 	if err != nil {
 		if !errors.Is(err, store.ErrNoAggregate) {
 			return nil, fmt.Errorf("buid %w", err)
@@ -204,38 +221,10 @@ func (a *Root[T]) build(ctx context.Context, id ID[T]) (*snapshot[T], error) {
 	return &snap, nil
 }
 
-// type CommandFunc[T any] func(*T) Event[T]
+// Execute executes a command on the aggregate root.
+func (a *Root[T]) Execute(ctx context.Context, idempKey string, command Command[T]) (CommandID[T], error) {
 
-// func (f CommandFunc[T]) Execute(t *T) Event[T] {
-// 	return f(t)
-// }
-
-// func (a *aggregate[T]) CommandFunc(ctx context.Context, idempKey string, command func(*T) Event[T]) error {
-// 	return a.Execute(ctx, idempKey, CommandFunc[T](command))
-// }
-
-type commandOptions struct {
-	waitTimeout  time.Duration
-	waitProjSync bool
-}
-
-func (o *commandOptions) WithWaitProjSync(waitTimeout time.Duration) *commandOptions {
-	o.waitProjSync = true
-	o.waitTimeout = waitTimeout
-	return o
-}
-
-type commandOption func(*commandOptions)
-
-func (a *Root[T]) Execute(ctx context.Context, idempKey string, command Command[T], opts ...commandOption) (CommandID[T], error) {
-	o := &commandOptions{
-		waitTimeout:  time.Second,
-		waitProjSync: false,
-	}
-	for _, opt := range opts {
-		opt(o)
-	}
-	commandUUID := CommandID[T](NewIdempotencyKey(command.AggregateID(), idempKey))
+	commandUUID := CommandID[T](uuid.NewSHA1(command.AggregateID().UUID(), []byte(idempKey)).String())
 	var err error
 
 	snap, err := a.build(ctx, command.AggregateID())
@@ -246,7 +235,7 @@ func (a *Root[T]) Execute(ctx context.Context, idempKey string, command Command[
 	evt := command.Execute(snap.Body)
 
 	if everr, ok := evt.(*EventError[T]); ok {
-		slog.Warn("command execution error", "error", everr.Reason, "aggregate_id", string(command.AggregateID()))
+		slog.Warn("command execution error", "error", everr.Reason, "aggregate_id", command.AggregateID())
 		return commandUUID, nil
 	}
 
@@ -259,7 +248,7 @@ func (a *Root[T]) Execute(ctx context.Context, idempKey string, command Command[
 	// Panics if event isn't registered
 	kind := typereg.GuardType(evt)
 
-	if err := a.es.Save(ctx, string(command.AggregateID()), string(commandUUID), &Envelope{Version: snap.Version, Payload: b, Kind: kind}); err != nil {
+	if err := a.es.Save(ctx, command.AggregateID().String(), commandUUID.String(), &Envelope{Version: snap.Version, Payload: b, Kind: kind}); err != nil {
 		return commandUUID, fmt.Errorf("command: %w", err)
 	}
 
@@ -272,12 +261,12 @@ func (a *Root[T]) Execute(ctx context.Context, idempKey string, command Command[
 				slog.Warn("snapshot save serialization", "error", err.Error())
 				return
 			}
-			err = a.ss.Save(ctx, string(command.AggregateID()), b)
+			err = a.ss.Save(ctx, command.AggregateID().String(), b)
 			if err != nil {
 				slog.Error("snapshot save", "error", err.Error())
 				return
 			}
-			slog.Info("snapshot saved", "version", snap.Version, "aggregateID", string(command.AggregateID()), "msg_count", snap.MsgCount, "aggregate", reflect.TypeFor[T]().Name())
+			slog.Info("snapshot saved", "version", snap.Version, "aggregateID", command.AggregateID(), "msg_count", snap.MsgCount, "aggregate", reflect.TypeFor[T]().Name())
 
 		}()
 

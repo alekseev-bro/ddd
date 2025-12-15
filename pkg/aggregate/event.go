@@ -1,8 +1,8 @@
 package aggregate
 
-type EventID[T any] ID[Event[T]]
+type EventID[T any] = ID[Event[T]]
 
-// EventError is not saved to the event store.
+// You can use EventError to create an error event that should be not stored to the event store.
 type EventError[T any] struct {
 	AggID  ID[T]
 	Reason string

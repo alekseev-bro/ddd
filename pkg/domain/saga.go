@@ -20,7 +20,8 @@ type sagaHandler[E aggregate.Event[T], C aggregate.Command[U], T any, U any] str
 }
 
 func (sf *sagaHandler[E, C, T, U]) Handle(ctx context.Context, eventID aggregate.EventID[T], event aggregate.Event[T]) error {
-	_, h := sf.cmd.Execute(ctx, string(eventID), sf.handler(event.(E)))
+
+	_, h := sf.cmd.Execute(ctx, eventID.String(), sf.handler(event.(E)))
 	return h
 
 }

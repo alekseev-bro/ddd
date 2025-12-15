@@ -16,7 +16,7 @@ type SubscribeParams struct {
 
 func WIthFilterByAggregateID[T any](id ID[T]) ProjOption {
 	return func(p *SubscribeParams) {
-		p.AggrID = string(id)
+		p.AggrID = id.String()
 	}
 }
 

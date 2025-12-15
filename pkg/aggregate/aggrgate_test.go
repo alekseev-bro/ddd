@@ -149,7 +149,7 @@ func NewMockSnapshotStore() *MockSnapshotStore {
 }
 
 type MockUser struct {
-	ID   string
+	ID   aggregate.ID[MockUser]
 	Name string
 }
 
@@ -166,7 +166,8 @@ type CreateUser struct {
 }
 
 func (c *CreateUser) AggregateID() aggregate.ID[MockUser] {
-	return aggregate.ID[MockUser](c.ID)
+
+	return c.ID
 }
 
 func (c *CreateUser) Execute(a *MockUser) aggregate.Event[MockUser] {
