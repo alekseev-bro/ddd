@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/alekseev-bro/ddd/pkg/aggregate"
+	"github.com/alekseev-bro/ddd/pkg/eventstore"
 	"github.com/alekseev-bro/ddd/pkg/store"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -25,8 +25,8 @@ const (
 	Memory
 )
 
-func NewSnapshotStore[T aggregate.Aggregatable](ctx context.Context, js jetstream.JetStream, opts ...Option[T]) *snapshotStore[T] {
-	aname, bname := aggregate.AggregateNameFromType[T]()
+func NewSnapshotStore[T any](ctx context.Context, js jetstream.JetStream, opts ...Option[T]) *snapshotStore[T] {
+	aname, bname := eventstore.AggregateNameFromType[T]()
 	ss := &snapshotStore[T]{
 		tname:      aname,
 		boundedCtx: bname,

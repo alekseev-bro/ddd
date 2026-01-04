@@ -1,17 +1,15 @@
 package esnats
 
-import "github.com/alekseev-bro/ddd/pkg/aggregate"
+type Option[T any] func(*eventStream[T]) error
 
-type Option[T aggregate.Aggregatable] func(*eventStream[T]) error
-
-func WithPartitions[T aggregate.Aggregatable](partitions byte) Option[T] {
+func WithPartitions[T any](partitions byte) Option[T] {
 	return func(es *eventStream[T]) error {
 		es.partnum = partitions
 		return nil
 	}
 }
 
-func WithInMemory[T aggregate.Aggregatable]() Option[T] {
+func WithInMemory[T any]() Option[T] {
 	return func(es *eventStream[T]) error {
 		es.storeType = Memory
 		return nil

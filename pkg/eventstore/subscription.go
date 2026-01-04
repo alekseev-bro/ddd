@@ -1,4 +1,4 @@
-package aggregate
+package eventstore
 
 import (
 	"context"
@@ -15,13 +15,13 @@ type SubscribeParams struct {
 	QoS         qos.QoS
 }
 
-func WIthFilterByAggregateID[T Aggregatable](id ID[T]) ProjOption {
+func WIthFilterByAggregateID[T Aggregate[T]](id ID[T]) ProjOption {
 	return func(p *SubscribeParams) {
 		p.AggrID = id.String()
 	}
 }
 
-func WithFilterByEvent[E Event[T], T Aggregatable]() ProjOption {
+func WithFilterByEvent[E Event[T], T any, PT Aggregate[T]]() ProjOption {
 	return func(p *SubscribeParams) {
 		var ev E
 		p.Kind = append(p.Kind, typereg.TypeNameFrom(ev))
@@ -40,11 +40,11 @@ func WithQoS(qos qos.QoS) ProjOption {
 	}
 }
 
-type EventHandler[T Aggregatable] interface {
+type EventHandler[T any] interface {
 	Handle(ctx context.Context, eventID EventID[T], event Event[T]) error
 }
 
-func (a *Root[T]) Project(ctx context.Context, h EventHandler[T], opts ...ProjOption) (Drainer, error) {
+func (a *eventStore[T]) ProjectEvent(ctx context.Context, h EventHandler[T], opts ...ProjOption) (Drainer, error) {
 	dn := typereg.TypeNameFrom(h)
 	params := &SubscribeParams{
 		DurableName: dn,
@@ -54,9 +54,9 @@ func (a *Root[T]) Project(ctx context.Context, h EventHandler[T], opts ...ProjOp
 			opt(params)
 		}
 	}
-	d, err := a.es.Subscribe(ctx, func(envel *Envelope) error {
+	d, err := a.es.Subscribe(ctx, func(envel *Message) error {
 		ev := typereg.GetType(envel.Kind, envel.Payload)
-		return h.Handle(ctx, EventID[T](envel.ID.String()), ev.(Event[T]))
+		return h.Handle(ctx, EventID[T](envel.ID), ev.(Event[T]))
 	}, params)
 	if err == nil {
 		slog.Info("subscription created", "subscription", params.DurableName)
