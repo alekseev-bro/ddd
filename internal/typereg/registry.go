@@ -31,7 +31,7 @@ func Register(item any) {
 			panic(err)
 		}
 
-		return vt
+		return reflect.ValueOf(vt).Elem().Interface()
 		//	var val V
 
 	}
@@ -64,7 +64,7 @@ func TypeNameFrom(e any) string {
 	}
 }
 
-func GuardType(t any) string {
+func GetKind(t any) string {
 	tname := TypeNameFrom(t)
 	ermu.RLock()
 	defer ermu.RUnlock()

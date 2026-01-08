@@ -1,4 +1,4 @@
-package eventstore
+package essrv
 
 import (
 	"database/sql/driver"
@@ -6,21 +6,23 @@ import (
 	"github.com/google/uuid"
 )
 
-type Aggregate[T any] interface {
-	*T
-}
-
 type ID[T any] uuid.UUID
+
+func (i ID[T]) IsZero() bool {
+	return uuid.UUID(i) == uuid.Nil
+}
 
 func (i ID[T]) String() string {
 	return uuid.UUID(i).String()
 }
 
 func (id *ID[T]) UnmarshalText(data []byte) error {
+
 	return (*uuid.UUID)(id).UnmarshalText(data)
 }
 
 func (i ID[T]) UUID() uuid.UUID {
+
 	return uuid.UUID(i)
 }
 

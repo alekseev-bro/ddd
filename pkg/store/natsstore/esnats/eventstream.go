@@ -12,7 +12,7 @@ import (
 	"github.com/alekseev-bro/ddd/pkg/qos"
 	"github.com/alekseev-bro/ddd/pkg/store"
 
-	"github.com/alekseev-bro/ddd/pkg/eventstore"
+	"github.com/alekseev-bro/ddd/pkg/essrv"
 
 	"math"
 
@@ -33,28 +33,24 @@ const (
 )
 
 type eventStream[T any] struct {
-	dedupe    time.Duration
-	storeType StoreType
+	EventStreamConfig
+	dedupe time.Duration
 	// TODO: impl partitioning
-	partnum    uint8
+
 	tname      string
 	boundedCtx string
 	js         jetstream.JetStream
 }
 
-func NewEventStream[T any](ctx context.Context, js jetstream.JetStream, opts ...Option[T]) *eventStream[T] {
-	aname, bcname := eventstore.AggregateNameFromType[T]()
+func NewEventStream[T any](ctx context.Context, js jetstream.JetStream, cfg EventStreamConfig) *eventStream[T] {
+	aname, bcname := essrv.AggregateNameFromType[T]()
 
-	stream := &eventStream[T]{js: js, tname: aname, boundedCtx: bcname}
-
-	for _, opt := range opts {
-		opt(stream)
-	}
+	stream := &eventStream[T]{js: js, tname: aname, boundedCtx: bcname, EventStreamConfig: cfg}
 
 	_, err := stream.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Subjects:           []string{stream.allSubjects()},
 		Name:               stream.streamName(),
-		Storage:            jetstream.StorageType(stream.storeType),
+		Storage:            jetstream.StorageType(stream.StoreType),
 		Duplicates:         stream.dedupe,
 		AllowDirect:        true,
 		AllowAtomicPublish: true,
@@ -82,14 +78,14 @@ func (s *eventStream[T]) allSubjects() string {
 	return fmt.Sprintf("%s.>", s.streamName())
 }
 
-func (s *eventStream[T]) Save(ctx context.Context, aggrID string, msgs []*eventstore.Event[T]) error {
+func (s *eventStream[T]) Save(ctx context.Context, aggrID essrv.ID[T], msgs []*essrv.Event[T]) error {
 
 	if msgs == nil {
 		return nil
 	}
 	nmsgs := make([]*nats.Msg, len(msgs))
 	for i, msg := range msgs {
-		sub := fmt.Sprintf("%s.%s", s.subjectNameForID(aggrID), msg.Kind)
+		sub := fmt.Sprintf("%s.%s", s.subjectNameForID(aggrID.String()), msg.Kind)
 		nmsg := nats.NewMsg(sub)
 		b, err := serde.Serialize(msg.Body)
 		if err != nil {
@@ -98,7 +94,7 @@ func (s *eventStream[T]) Save(ctx context.Context, aggrID string, msgs []*events
 		}
 		nmsg.Data = b
 		nmsg.Header.Add(jetstream.MsgIDHeader, msg.ID.String())
-		nmsg.Header.Add(jetstream.ExpectedLastSubjSeqSubjHeader, s.allSubjectsForID(aggrID))
+		nmsg.Header.Add(jetstream.ExpectedLastSubjSeqSubjHeader, s.allSubjectsForID(aggrID.String()))
 		nmsg.Header.Add(jetstream.ExpectedLastSubjSeqHeader, strconv.Itoa(int(msg.PrevVersion)))
 		nmsgs[i] = nmsg
 	}
@@ -108,15 +104,15 @@ func (s *eventStream[T]) Save(ctx context.Context, aggrID string, msgs []*events
 		if err != nil {
 			var seqerr *jetstream.APIError
 			if errors.As(err, &seqerr); seqerr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence {
-				slog.Warn("occ", "version", msgs[0].PrevVersion, "name", s.subjectNameForID(aggrID))
+				slog.Warn("occ", "version", msgs[0].PrevVersion, "name", s.subjectNameForID(aggrID.String()))
 			}
 			return fmt.Errorf("store event func: %w", err)
 		}
 		if ack.Duplicate {
-			slog.Warn("duplicate event not stored", "kind", msgs[0].Kind, "subject", s.subjectNameForID(aggrID), "stream", s.streamName())
+			slog.Warn("duplicate event not stored", "kind", msgs[0].Kind, "subject", s.subjectNameForID(aggrID.String()), "stream", s.streamName())
 			return nil
 		}
-		slog.Info("event stored", "kind", msgs[0].Kind, "subject", s.subjectNameForID(aggrID), "stream", s.streamName())
+		slog.Info("event stored", "kind", msgs[0].Kind, "subject", s.subjectNameForID(aggrID.String()), "stream", s.streamName())
 		return nil
 	}
 
@@ -124,20 +120,20 @@ func (s *eventStream[T]) Save(ctx context.Context, aggrID string, msgs []*events
 	if err != nil {
 		var seqerr *jetstream.APIError
 		if errors.As(err, &seqerr); seqerr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence {
-			slog.Warn("occ", "name", s.subjectNameForID(aggrID))
+			slog.Warn("occ", "name", s.subjectNameForID(aggrID.String()))
 		}
 		return fmt.Errorf("save: %w", err)
 	}
 
 	for _, msg := range msgs {
-		slog.Info("event stored", "kind", msg.Kind, "subject", s.subjectNameForID(aggrID), "stream", s.streamName())
+		slog.Info("event stored", "kind", msg.Kind, "subject", s.subjectNameForID(aggrID.String()), "stream", s.streamName())
 	}
 	return nil
 }
 
-func (s *eventStream[T]) Load(ctx context.Context, id string, version uint64) ([]*eventstore.Event[T], error) {
+func (s *eventStream[T]) Load(ctx context.Context, id essrv.ID[T], version uint64) ([]*essrv.Event[T], error) {
 
-	subj := s.allSubjectsForID(id)
+	subj := s.allSubjectsForID(id.String())
 	msgs, err := jetstreamext.GetBatch(ctx,
 		s.js, s.streamName(), math.MaxInt, jetstreamext.GetBatchSubject(subj),
 		jetstreamext.GetBatchSeq(version+1))
@@ -146,8 +142,8 @@ func (s *eventStream[T]) Load(ctx context.Context, id string, version uint64) ([
 	if err != nil {
 		return nil, fmt.Errorf("get events: %w", err)
 	}
-	var events []*eventstore.Event[T]
-	var prevEv *eventstore.Event[T]
+	var events []*essrv.Event[T]
+	var prevEv *essrv.Event[T]
 	for msg, err := range msgs {
 
 		if err != nil {
@@ -180,7 +176,7 @@ func (d *drainAdapter) Drain() error {
 	return nil
 }
 
-type drainList []eventstore.Drainer
+type drainList []essrv.Drainer
 
 func (d drainList) Drain() error {
 	for _, drainer := range d {
@@ -191,7 +187,7 @@ func (d drainList) Drain() error {
 	return nil
 }
 
-func aggrIDFromParams(params *eventstore.SubscribeParams) string {
+func aggrIDFromParams[T any](params *essrv.SubscribeParams[T]) string {
 	if params.AggrID != "" {
 		return params.AggrID
 	}
@@ -199,7 +195,7 @@ func aggrIDFromParams(params *eventstore.SubscribeParams) string {
 	return "*"
 }
 
-func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *eventstore.Event[T]) error, params *eventstore.SubscribeParams) (eventstore.Drainer, error) {
+func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *essrv.Event[T]) error, params *essrv.SubscribeParams[T]) (essrv.Drainer, error) {
 
 	maxpend := maxAckPending
 	if params.QoS.Ordering == qos.Ordered {
@@ -249,7 +245,7 @@ func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *even
 		// 	return
 		// }
 
-		var target *eventstore.InvariantViolationError
+		var target *essrv.InvariantViolationError
 		if err := handler(eventFromMsg[T](natsJSMsgAdapter{msg})); err != nil {
 			if !errors.As(err, &target) {
 				slog.Warn("redelivering", "error", err)

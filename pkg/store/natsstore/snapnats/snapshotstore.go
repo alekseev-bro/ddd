@@ -4,15 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
-	"github.com/alekseev-bro/ddd/pkg/eventstore"
+	"github.com/alekseev-bro/ddd/internal/serde"
+	"github.com/alekseev-bro/ddd/pkg/essrv"
 	"github.com/alekseev-bro/ddd/pkg/store"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
 
 type snapshotStore[T any] struct {
-	storeType  StoreType
+	SnapshotStoreConfig
 	tname      string
 	boundedCtx string
 	kv         jetstream.KeyValue
@@ -25,18 +27,17 @@ const (
 	Memory
 )
 
-func NewSnapshotStore[T any](ctx context.Context, js jetstream.JetStream, opts ...Option[T]) *snapshotStore[T] {
-	aname, bname := eventstore.AggregateNameFromType[T]()
+func NewSnapshotStore[T any](ctx context.Context, js jetstream.JetStream, cfg SnapshotStoreConfig) *snapshotStore[T] {
+	aname, bname := essrv.AggregateNameFromType[T]()
 	ss := &snapshotStore[T]{
-		tname:      aname,
-		boundedCtx: bname,
+		SnapshotStoreConfig: cfg,
+		tname:               aname,
+		boundedCtx:          bname,
 	}
-	for _, opt := range opts {
-		opt(ss)
-	}
+
 	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:  ss.snapshotBucketName(),
-		Storage: jetstream.StorageType(ss.storeType),
+		Storage: jetstream.StorageType(ss.StoreType),
 	})
 	if err != nil {
 		panic(err)
@@ -50,13 +51,19 @@ func (s *snapshotStore[T]) snapshotBucketName() string {
 	return fmt.Sprintf("snapshot-%s-%s", s.boundedCtx, s.tname)
 }
 
-func (s *snapshotStore[T]) Save(ctx context.Context, id string, snap []byte) error {
-	_, err := s.kv.Put(ctx, id, snap)
+func (s *snapshotStore[T]) Save(ctx context.Context, id essrv.ID[T], snap *essrv.Snapshot[T]) error {
+	b, err := serde.Serialize(snap)
+	if err != nil {
+		slog.Warn("snapshot save serialization", "error", err.Error())
+		return err
+	}
+	_, err = s.kv.Put(ctx, id.String(), b)
 	return err
 }
 
-func (s *snapshotStore[T]) Load(ctx context.Context, id string) ([]byte, error) {
-	v, err := s.kv.Get(ctx, id)
+func (s *snapshotStore[T]) Load(ctx context.Context, id essrv.ID[T]) (*essrv.Snapshot[T], error) {
+
+	v, err := s.kv.Get(ctx, id.String())
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
 			return nil, store.ErrNoSnapshot
@@ -64,5 +71,12 @@ func (s *snapshotStore[T]) Load(ctx context.Context, id string) ([]byte, error) 
 		return nil, err
 	}
 
-	return v.Value(), nil
+	var snap essrv.Snapshot[T]
+
+	if err := serde.Deserialize(v.Value(), &snap); err != nil {
+		slog.Error("load snapshot deserialize", "error", err)
+		panic(fmt.Errorf("load snapshot: %w", err))
+	}
+
+	return &snap, nil
 }
