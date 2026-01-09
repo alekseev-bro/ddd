@@ -1,4 +1,4 @@
-package essrv
+package events
 
 import (
 	"database/sql/driver"

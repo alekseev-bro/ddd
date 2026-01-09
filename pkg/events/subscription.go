@@ -1,4 +1,4 @@
-package essrv
+package events
 
 import (
 	"context"
@@ -42,7 +42,7 @@ func WithQoS[T any](qos qos.QoS) ProjOption[T] {
 }
 
 func ProjectEvent[E Evolver[T], T any](ctx context.Context, h oneEventsHandler[E, T]) (Drainer, error) {
-	proj := New[T](ctx, nil, nil, AggregateConfig{})
+	proj := NewStore[T](ctx, nil, nil, AggregateConfig{})
 	var zero E
 	return proj.Project(ctx, &handleOneAdapter[E, T]{h: h}, WithFilterByEvent[E](), WithName[T](typereg.TypeNameFrom(zero)))
 
@@ -64,7 +64,7 @@ type allEventsHandler[T any] interface {
 	Handle(ctx context.Context, eventID string, event Evolver[T]) error
 }
 
-func (a *root[T]) Project(ctx context.Context, h allEventsHandler[T], opts ...ProjOption[T]) (Drainer, error) {
+func (a *store[T]) Project(ctx context.Context, h allEventsHandler[T], opts ...ProjOption[T]) (Drainer, error) {
 	dn := typereg.TypeNameFrom(h)
 	params := &SubscribeParams[T]{
 		DurableName: dn,

@@ -1,18 +1,16 @@
-package essrv
+package events
 
 import (
 	"context"
 	"errors"
 	"log/slog"
 	"reflect"
-	"strings"
 	"sync"
 	"time"
 
 	"fmt"
 
 	"github.com/alekseev-bro/ddd/pkg/qos"
-	"github.com/alekseev-bro/ddd/pkg/store"
 
 	"github.com/alekseev-bro/ddd/internal/serde"
 	"github.com/alekseev-bro/ddd/internal/typereg"
@@ -42,39 +40,26 @@ func (e InvariantViolationError) Error() string {
 var amu sync.RWMutex
 var aggregates map[reflect.Type]any = make(map[reflect.Type]any)
 
-func getAggregate[T any]() (*root[T], bool) {
+func getAggregate[T any]() (*store[T], bool) {
 	amu.RLock()
 	defer amu.RUnlock()
 
 	if agg, ok := aggregates[reflect.TypeFor[T]()]; ok {
-		return agg.(*root[T]), true
+		return agg.(*store[T]), true
 	}
 	return nil, false
 }
 
-func setAggregate[T any](agg *root[T]) {
+func setAggregate[T any](agg *store[T]) {
 	amu.Lock()
 	defer amu.Unlock()
 
 	aggregates[reflect.TypeFor[T]()] = agg
 }
 
-// AggregateNameFromType returns the aggregate name and bounded context name from the type T.
-func AggregateNameFromType[T any]() (aname string, bctx string) {
-	t := reflect.TypeFor[T]()
-	if t.Kind() != reflect.Struct {
-		panic("T must be a struct")
-	}
-
-	aname = t.Name()
-	sep := strings.Split(t.PkgPath(), "/")
-	bctx = sep[len(sep)-1]
-	return
-}
-
 type Serder serde.Serder
 
-func (*root[T]) NewID() ID[T] {
+func (*store[T]) NewID() ID[T] {
 	a, err := uuid.NewV7()
 	if err != nil {
 		panic(err)
@@ -89,8 +74,8 @@ func SetTypeEncoder(s Serder) {
 	serde.SetDefaultSerder(s)
 }
 
-// New creates a new aggregate root using the provided event stream and snapshot store.
-func New[T any](ctx context.Context, es EventStream[T], ss SnapshotStore[T], cfg AggregateConfig, opts ...RegisteredEvent[T]) *root[T] {
+// NewStore creates a new aggregate root using the provided event stream and snapshot store.
+func NewStore[T any](ctx context.Context, es EventStream[T], ss SnapshotStore[T], cfg AggregateConfig, opts ...RegisteredEvent[T]) *store[T] {
 	if aggr, ok := getAggregate[T](); ok {
 		return aggr
 	}
@@ -102,7 +87,7 @@ func New[T any](ctx context.Context, es EventStream[T], ss SnapshotStore[T], cfg
 		cfg.SnapshotMaxInterval = snapshotInterval
 	}
 
-	aggr := &root[T]{
+	aggr := &store[T]{
 		AggregateConfig: cfg,
 		es:              es,
 		ss:              ss,
@@ -131,8 +116,8 @@ type Projector[T any] interface {
 	Project(ctx context.Context, h allEventsHandler[T], opts ...ProjOption[T]) (Drainer, error)
 }
 
-// All aggregates must implement the Root interface.
-type Root[T any] interface {
+// All aggregates must implement the Store interface.
+type Store[T any] interface {
 	Projector[T]
 	Executer[T]
 	NewID() ID[T]
@@ -160,8 +145,8 @@ type SnapshotStore[T any] interface {
 	Load(ctx context.Context, aggrID ID[T]) (*Snapshot[T], error)
 }
 
-// Aggregate root type it implements the Aggregate interface.
-type root[T any] struct {
+// Aggregate store type it implements the Aggregate interface.
+type store[T any] struct {
 	AggregateConfig
 	es     EventStream[T]
 	ss     SnapshotStore[T]
@@ -181,12 +166,12 @@ type State[T any] struct {
 	Body         *T
 }
 
-func (a *root[T]) Build(ctx context.Context, id ID[T]) (*State[T], error) {
+func (a *store[T]) Build(ctx context.Context, id ID[T]) (*State[T], error) {
 	state := &State[T]{Body: new(T)}
 
 	sn, err := a.ss.Load(ctx, id)
 	if err != nil {
-		if !errors.Is(err, store.ErrNoSnapshot) {
+		if !errors.Is(err, ErrNoSnapshot) {
 			return nil, fmt.Errorf("build: %w", err)
 		}
 	}
@@ -198,7 +183,7 @@ func (a *root[T]) Build(ctx context.Context, id ID[T]) (*State[T], error) {
 
 	events, err := a.es.Load(ctx, id, state.Version)
 	if err != nil {
-		if errors.Is(err, store.ErrNoAggregate) {
+		if errors.Is(err, ErrNoAggregate) {
 			if sn == nil {
 				return nil, nil
 			}
@@ -223,12 +208,12 @@ func (a *root[T]) Build(ctx context.Context, id ID[T]) (*State[T], error) {
 	return state, nil
 }
 
-func (a *root[T]) ExecuteUnique(ctx context.Context, id ID[T], modify command[T]) ([]*Event[T], error) {
+func (a *store[T]) ExecuteUnique(ctx context.Context, id ID[T], modify command[T]) ([]*Event[T], error) {
 	return a.Execute(ctx, id, modify, id.String())
 }
 
 // Update executes a command on the aggregate root.
-func (a *root[T]) Execute(
+func (a *store[T]) Execute(
 	ctx context.Context, id ID[T],
 	modify command[T],
 	idempKey string,

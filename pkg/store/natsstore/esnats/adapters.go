@@ -6,7 +6,8 @@ import (
 	"time"
 
 	"github.com/alekseev-bro/ddd/internal/typereg"
-	"github.com/alekseev-bro/ddd/pkg/essrv"
+	"github.com/alekseev-bro/ddd/pkg/events"
+
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
@@ -103,7 +104,7 @@ func (n natsJSMsgAdapter) Seq() uint64 {
 	return mt.Sequence.Stream
 }
 
-func eventFromMsg[T any](msg natsMessage) *essrv.Event[T] {
+func eventFromMsg[T any](msg natsMessage) *events.Event[T] {
 
 	mid, err := uuid.Parse(msg.Headers().Get(jetstream.MsgIDHeader))
 	if err != nil {
@@ -119,12 +120,12 @@ func eventFromMsg[T any](msg natsMessage) *essrv.Event[T] {
 	}
 
 	ev := typereg.GetType(kind, msg.Data())
-	return &essrv.Event[T]{
-		ID:          essrv.EventID[T](mid),
-		AggregateID: essrv.ID[T](aggregateID),
+	return &events.Event[T]{
+		ID:          events.EventID[T](mid),
+		AggregateID: events.ID[T](aggregateID),
 		Kind:        kind,
 		Version:     msg.Seq(),
-		Body:        ev.(essrv.Evolver[T]),
+		Body:        ev.(events.Evolver[T]),
 		Timestamp:   msg.Timestamp(),
 	}
 }

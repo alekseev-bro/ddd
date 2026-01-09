@@ -1,4 +1,4 @@
-package essrv
+package events
 
 import "time"
 
@@ -8,7 +8,7 @@ type Evolver[T any] interface {
 	Evolve(*T)
 }
 
-func NewEvents[T any](events ...Evolver[T]) Events[T] {
+func New[T any](events ...Evolver[T]) Events[T] {
 	return events
 }
 
@@ -27,16 +27,4 @@ type Event[T any] struct {
 func (e *Event[T]) Evolve(aggr *T) {
 
 	e.Body.Evolve(aggr)
-}
-
-type Created[T any] struct {
-	State *T
-}
-
-func (e Created[T]) Evolve(state *T) {
-	*state = *e.State
-}
-
-func NewCreatedEvent[T any](state *T) Created[T] {
-	return Created[T]{State: state}
 }

@@ -8,8 +8,7 @@ import (
 
 	"github.com/alekseev-bro/ddd/internal/serde"
 	"github.com/alekseev-bro/ddd/internal/typereg"
-	"github.com/alekseev-bro/ddd/pkg/essrv"
-	"github.com/alekseev-bro/ddd/pkg/store"
+	"github.com/alekseev-bro/ddd/pkg/events"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
@@ -48,7 +47,7 @@ func (s *snapshotStore[T]) snapshotBucketName() string {
 	return fmt.Sprintf("snapshot-%s", typereg.TypeNameFor[T](typereg.WithDelimiter("-")))
 }
 
-func (s *snapshotStore[T]) Save(ctx context.Context, id essrv.ID[T], snap *essrv.Snapshot[T]) error {
+func (s *snapshotStore[T]) Save(ctx context.Context, id events.ID[T], snap *events.Snapshot[T]) error {
 	b, err := serde.Serialize(snap)
 	if err != nil {
 		slog.Warn("snapshot save serialization", "error", err.Error())
@@ -58,17 +57,17 @@ func (s *snapshotStore[T]) Save(ctx context.Context, id essrv.ID[T], snap *essrv
 	return err
 }
 
-func (s *snapshotStore[T]) Load(ctx context.Context, id essrv.ID[T]) (*essrv.Snapshot[T], error) {
+func (s *snapshotStore[T]) Load(ctx context.Context, id events.ID[T]) (*events.Snapshot[T], error) {
 
 	v, err := s.kv.Get(ctx, id.String())
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, store.ErrNoSnapshot
+			return nil, events.ErrNoSnapshot
 		}
 		return nil, err
 	}
 
-	var snap essrv.Snapshot[T]
+	var snap events.Snapshot[T]
 
 	if err := serde.Deserialize(v.Value(), &snap); err != nil {
 		slog.Error("load snapshot deserialize", "error", err)

@@ -1,4 +1,4 @@
-package essrv
+package events
 
 // type sagaHandlerFunc[Event Evolver[T], Command Dispatcher[U], T any, U any] func(event Event) (Command, ID[U])
 

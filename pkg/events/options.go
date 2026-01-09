@@ -1,4 +1,4 @@
-package essrv
+package events
 
 import (
 	"time"
@@ -11,11 +11,11 @@ type AggregateConfig struct {
 	SnapshotMaxInterval  time.Duration
 }
 
-type RegisteredEvent[T any] func(a *root[T])
+type RegisteredEvent[T any] func(a *store[T])
 
 func WithEvent[E Evolver[T], T any]() RegisteredEvent[T] {
 
-	return func(a *root[T]) {
+	return func(a *store[T]) {
 		var zero E
 		typereg.Register(zero)
 	}

@@ -1,8 +1,8 @@
-package store
+package events
 
 import "errors"
 
 var (
-	ErrNoAggregate = errors.New("no aggregate messages")
 	ErrNoSnapshot  = errors.New("no snapshot")
+	ErrNoAggregate = errors.New("no aggregate messages")
 )

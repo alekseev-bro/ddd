@@ -11,9 +11,8 @@ import (
 	"github.com/alekseev-bro/ddd/internal/serde"
 	"github.com/alekseev-bro/ddd/internal/typereg"
 	"github.com/alekseev-bro/ddd/pkg/qos"
-	"github.com/alekseev-bro/ddd/pkg/store"
 
-	"github.com/alekseev-bro/ddd/pkg/essrv"
+	"github.com/alekseev-bro/ddd/pkg/events"
 
 	"math"
 
@@ -75,7 +74,7 @@ func (s *eventStream[T]) allSubjects() string {
 	return fmt.Sprintf("%s.>", s.streamName())
 }
 
-func (s *eventStream[T]) Save(ctx context.Context, aggrID essrv.ID[T], msgs []*essrv.Event[T]) error {
+func (s *eventStream[T]) Save(ctx context.Context, aggrID events.ID[T], msgs []*events.Event[T]) error {
 
 	if msgs == nil {
 		return nil
@@ -128,7 +127,7 @@ func (s *eventStream[T]) Save(ctx context.Context, aggrID essrv.ID[T], msgs []*e
 	return nil
 }
 
-func (s *eventStream[T]) Load(ctx context.Context, id essrv.ID[T], version uint64) ([]*essrv.Event[T], error) {
+func (s *eventStream[T]) Load(ctx context.Context, id events.ID[T], version uint64) ([]*events.Event[T], error) {
 
 	subj := s.allSubjectsForID(id.String())
 	msgs, err := jetstreamext.GetBatch(ctx,
@@ -139,14 +138,14 @@ func (s *eventStream[T]) Load(ctx context.Context, id essrv.ID[T], version uint6
 	if err != nil {
 		return nil, fmt.Errorf("get events: %w", err)
 	}
-	var events []*essrv.Event[T]
-	var prevEv *essrv.Event[T]
+	var evts []*events.Event[T]
+	var prevEv *events.Event[T]
 	for msg, err := range msgs {
 
 		if err != nil {
 			if errors.Is(err, jetstreamext.ErrNoMessages) {
 
-				return nil, store.ErrNoAggregate
+				return nil, events.ErrNoAggregate
 			}
 			return nil, fmt.Errorf("build func can't get msg batch: %w", err)
 		}
@@ -159,9 +158,9 @@ func (s *eventStream[T]) Load(ctx context.Context, id essrv.ID[T], version uint6
 		}
 
 		prevEv = event
-		events = append(events, event)
+		evts = append(evts, event)
 	}
-	return events, nil
+	return evts, nil
 }
 
 type drainAdapter struct {
@@ -173,7 +172,7 @@ func (d *drainAdapter) Drain() error {
 	return nil
 }
 
-type drainList []essrv.Drainer
+type drainList []events.Drainer
 
 func (d drainList) Drain() error {
 	for _, drainer := range d {
@@ -184,7 +183,7 @@ func (d drainList) Drain() error {
 	return nil
 }
 
-func aggrIDFromParams[T any](params *essrv.SubscribeParams[T]) string {
+func aggrIDFromParams[T any](params *events.SubscribeParams[T]) string {
 	if params.AggrID != "" {
 		return params.AggrID
 	}
@@ -192,7 +191,7 @@ func aggrIDFromParams[T any](params *essrv.SubscribeParams[T]) string {
 	return "*"
 }
 
-func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *essrv.Event[T]) error, params *essrv.SubscribeParams[T]) (essrv.Drainer, error) {
+func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *events.Event[T]) error, params *events.SubscribeParams[T]) (events.Drainer, error) {
 
 	maxpend := maxAckPending
 	if params.QoS.Ordering == qos.Ordered {
@@ -212,7 +211,7 @@ func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *essr
 		for i, f := range filter {
 			sub, err := e.js.Conn().Subscribe(f, func(msg *nats.Msg) {
 
-				var target *essrv.InvariantViolationError
+				var target *events.InvariantViolationError
 				if err := handler(eventFromMsg[T](natsMessageAdapter{msg})); err != nil {
 					if !errors.As(err, &target) {
 						slog.Warn("redelivering", "error", err)
@@ -253,7 +252,7 @@ func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *essr
 		// 	return
 		// }
 
-		var target *essrv.InvariantViolationError
+		var target *events.InvariantViolationError
 		if err := handler(eventFromMsg[T](natsJSMsgAdapter{msg})); err != nil {
 			if !errors.As(err, &target) {
 				slog.Warn("redelivering", "error", err)
