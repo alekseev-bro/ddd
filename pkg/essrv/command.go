@@ -1,9 +1,5 @@
 package essrv
 
-type Dispatcher[T any] interface {
-	Dispatch(aggr *T) (Events[T], error)
-}
-
 type Create[T any] struct {
 	State  *T
 	Events []Evolver[T]

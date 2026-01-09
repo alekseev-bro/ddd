@@ -119,9 +119,11 @@ func New[T any](ctx context.Context, es EventStream[T], ss SnapshotStore[T], cfg
 // Each command is executed in a transactional manner, ensuring that the aggregate state is consistent.
 // Commands must implement the Decider interface.
 type Executer[T any] interface {
-	Execute(ctx context.Context, id ID[T], command Dispatcher[T], idempotencyKey string) ([]*Event[T], error)
-	ExecuteUnique(ctx context.Context, id ID[T], command Dispatcher[T]) ([]*Event[T], error)
+	Execute(ctx context.Context, id ID[T], modify func(aggr *T) (Events[T], error), idempotencyKey string) ([]*Event[T], error)
+	ExecuteUnique(ctx context.Context, id ID[T], command func(aggr *T) (Events[T], error)) ([]*Event[T], error)
 }
+
+type command[T any] = func(aggr *T) (Events[T], error)
 
 // Projector is an interface that defines the ProjectEvent method for projecting events on an aggregate.
 // Events must implement the Event interface.
@@ -179,7 +181,7 @@ type State[T any] struct {
 	Body         *T
 }
 
-func (a *root[T]) build(ctx context.Context, id ID[T]) (*State[T], error) {
+func (a *root[T]) Build(ctx context.Context, id ID[T]) (*State[T], error) {
 	state := &State[T]{Body: new(T)}
 
 	sn, err := a.ss.Load(ctx, id)
@@ -221,14 +223,14 @@ func (a *root[T]) build(ctx context.Context, id ID[T]) (*State[T], error) {
 	return state, nil
 }
 
-func (a *root[T]) ExecuteUnique(ctx context.Context, id ID[T], command Dispatcher[T]) ([]*Event[T], error) {
-	return a.Execute(ctx, id, command, id.String())
+func (a *root[T]) ExecuteUnique(ctx context.Context, id ID[T], modify command[T]) ([]*Event[T], error) {
+	return a.Execute(ctx, id, modify, id.String())
 }
 
 // Update executes a command on the aggregate root.
 func (a *root[T]) Execute(
 	ctx context.Context, id ID[T],
-	command Dispatcher[T],
+	modify command[T],
 	idempKey string,
 ) ([]*Event[T], error) {
 	if idempKey == "" {
@@ -237,7 +239,7 @@ func (a *root[T]) Execute(
 
 	var err error
 
-	state, err := a.build(ctx, id)
+	state, err := a.Build(ctx, id)
 	if err != nil {
 		return nil, fmt.Errorf("build aggrigate: %w", err)
 	}
@@ -245,10 +247,10 @@ func (a *root[T]) Execute(
 	var evts Events[T]
 	var version uint64
 	if state != nil {
-		evts, err = command.Dispatch(state.Body)
+		evts, err = modify(state.Body)
 		version = state.Version
 	} else {
-		evts, err = command.Dispatch(new(T))
+		evts, err = modify(new(T))
 	}
 
 	if err != nil {

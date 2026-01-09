@@ -41,8 +41,27 @@ func WithQoS[T any](qos qos.QoS) ProjOption[T] {
 	}
 }
 
+func ProjectEvent[E Evolver[T], T any](ctx context.Context, h oneEventsHandler[E, T]) (Drainer, error) {
+	proj := New[T](ctx, nil, nil, AggregateConfig{})
+	var zero E
+	return proj.Project(ctx, &handleOneAdapter[E, T]{h: h}, WithFilterByEvent[E](), WithName[T](typereg.TypeNameFrom(zero)))
+
+}
+
+type handleOneAdapter[E Evolver[T], T any] struct {
+	h oneEventsHandler[E, T]
+}
+
+func (h *handleOneAdapter[E, T]) Handle(ctx context.Context, eventID string, event Evolver[T]) error {
+	return h.h.Handle(ctx, eventID, event.(E))
+}
+
+type oneEventsHandler[E Evolver[T], T any] interface {
+	Handle(ctx context.Context, eventID string, event E) error
+}
+
 type allEventsHandler[T any] interface {
-	HandleAllEvents(ctx context.Context, event *Event[T]) error
+	Handle(ctx context.Context, eventID string, event Evolver[T]) error
 }
 
 func (a *root[T]) Project(ctx context.Context, h allEventsHandler[T], opts ...ProjOption[T]) (Drainer, error) {
@@ -57,7 +76,7 @@ func (a *root[T]) Project(ctx context.Context, h allEventsHandler[T], opts ...Pr
 	}
 	d, err := a.es.Subscribe(ctx, func(event *Event[T]) error {
 
-		return h.HandleAllEvents(ctx, event)
+		return h.Handle(ctx, event.ID.String(), event.Body)
 	}, params)
 	if err == nil {
 		slog.Info("subscription created", "subscription", params.DurableName)
