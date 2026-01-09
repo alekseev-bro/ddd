@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/alekseev-bro/ddd/internal/serde"
+	"github.com/alekseev-bro/ddd/internal/typereg"
 	"github.com/alekseev-bro/ddd/pkg/qos"
 	"github.com/alekseev-bro/ddd/pkg/store"
 
@@ -36,16 +37,12 @@ type eventStream[T any] struct {
 	EventStreamConfig
 	dedupe time.Duration
 	// TODO: impl partitioning
-
-	tname      string
-	boundedCtx string
-	js         jetstream.JetStream
+	js jetstream.JetStream
 }
 
 func NewEventStream[T any](ctx context.Context, js jetstream.JetStream, cfg EventStreamConfig) *eventStream[T] {
-	aname, bcname := essrv.AggregateNameFromType[T]()
 
-	stream := &eventStream[T]{js: js, tname: aname, boundedCtx: bcname, EventStreamConfig: cfg}
+	stream := &eventStream[T]{js: js, EventStreamConfig: cfg}
 
 	_, err := stream.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Subjects:           []string{stream.allSubjects()},
@@ -64,14 +61,14 @@ func NewEventStream[T any](ctx context.Context, js jetstream.JetStream, cfg Even
 }
 
 func (s *eventStream[T]) subjectNameForID(agrid string) string {
-	return fmt.Sprintf("%s:%s.%s", s.boundedCtx, s.tname, agrid)
+	return fmt.Sprintf("%s.%s", typereg.TypeNameFor[T](), agrid)
 }
 func (s *eventStream[T]) allSubjectsForID(agrid string) string {
-	return fmt.Sprintf("%s:%s.%s.>", s.boundedCtx, s.tname, agrid)
+	return fmt.Sprintf("%s.%s.>", typereg.TypeNameFor[T](), agrid)
 }
 
 func (s *eventStream[T]) streamName() string {
-	return fmt.Sprintf("%s:%s", s.boundedCtx, s.tname)
+	return typereg.TypeNameFor[T]()
 }
 
 func (s *eventStream[T]) allSubjects() string {
@@ -215,7 +212,18 @@ func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *essr
 		for i, f := range filter {
 			sub, err := e.js.Conn().Subscribe(f, func(msg *nats.Msg) {
 
-				handler(eventFromMsg[T](natsMessageAdapter{msg}))
+				var target *essrv.InvariantViolationError
+				if err := handler(eventFromMsg[T](natsMessageAdapter{msg})); err != nil {
+					if !errors.As(err, &target) {
+						slog.Warn("redelivering", "error", err)
+						msg.Nak()
+						return
+					} else {
+						slog.Warn("invariant violation", "reason", err.Error())
+					}
+				}
+				msg.Ack()
+
 			})
 			if err != nil {
 				return nil, fmt.Errorf("at most once subscribe: %w", err)
@@ -255,7 +263,6 @@ func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *essr
 				slog.Warn("invariant violation", "reason", err.Error())
 			}
 		}
-
 		msg.Ack()
 
 	}, jetstream.ConsumeErrHandler(func(consumeCtx jetstream.ConsumeContext, err error) {}))

@@ -250,14 +250,13 @@ func (a *root[T]) Execute(
 		evts, err = modify(state.Body)
 		version = state.Version
 	} else {
-		evts, err = modify(new(T))
+		evts, err = modify(nil)
 	}
-
 	if err != nil {
-		return nil, &InvariantViolationError{Err: err}
+		err = &InvariantViolationError{Err: err}
 	}
 	if evts == nil {
-		return nil, nil
+		return nil, err
 	}
 	msgs := make([]*Event[T], len(evts))
 	for i, ev := range evts {
@@ -282,7 +281,7 @@ func (a *root[T]) Execute(
 
 		go func() {
 
-			err = a.ss.Save(ctx, id, &Snapshot[T]{Timestamp: time.Now(), State: state})
+			err := a.ss.Save(ctx, id, &Snapshot[T]{Timestamp: time.Now(), State: state})
 			if err != nil {
 				slog.Error("snapshot save", "error", err.Error())
 				return
@@ -293,5 +292,5 @@ func (a *root[T]) Execute(
 
 	}
 
-	return msgs, nil
+	return msgs, err
 }

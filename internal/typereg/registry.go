@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"reflect"
+	"strings"
 	"sync"
 
 	"github.com/alekseev-bro/ddd/internal/serde"
@@ -43,25 +44,42 @@ func Register(item any) {
 	slog.Info("event registered", "type", tn)
 }
 
-func TypeNameFrom(e any) string {
+func TypeNameFor[T any](opts ...typeNameFromOption) string {
+	var zero T
+	return TypeNameFrom(zero, opts...)
+}
+
+type typeNameFromOption string
+
+func WithDelimiter(delimiter string) typeNameFromOption {
+	return typeNameFromOption(delimiter)
+}
+
+func TypeNameFrom(e any, opts ...typeNameFromOption) string {
 	if strev, ok := e.(fmt.Stringer); ok {
 
 		return strev.String()
 	}
-
+	delim := "::"
+	for _, opt := range opts {
+		delim = string(opt)
+	}
 	t := reflect.TypeOf(e)
+	sep := strings.Split(t.PkgPath(), "/")
+	bctx := sep[len(sep)-1]
 	switch t.Kind() {
 
 	case reflect.Struct:
-		return t.Name()
+		return fmt.Sprintf("%s%s%s", bctx, delim, t.Name())
 	case reflect.Pointer:
-		return t.Elem().Name()
+		return fmt.Sprintf("%s%s%s", bctx, delim, t.Elem().Name())
 	default:
 
 		panic("unsupported type")
 
 		//	json.Marshal()
 	}
+
 }
 
 func GetKind(t any) string {

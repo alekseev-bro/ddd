@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/alekseev-bro/ddd/internal/serde"
+	"github.com/alekseev-bro/ddd/internal/typereg"
 	"github.com/alekseev-bro/ddd/pkg/essrv"
 	"github.com/alekseev-bro/ddd/pkg/store"
 
@@ -15,9 +16,7 @@ import (
 
 type snapshotStore[T any] struct {
 	SnapshotStoreConfig
-	tname      string
-	boundedCtx string
-	kv         jetstream.KeyValue
+	kv jetstream.KeyValue
 }
 
 type StoreType jetstream.StorageType
@@ -28,11 +27,9 @@ const (
 )
 
 func NewSnapshotStore[T any](ctx context.Context, js jetstream.JetStream, cfg SnapshotStoreConfig) *snapshotStore[T] {
-	aname, bname := essrv.AggregateNameFromType[T]()
+
 	ss := &snapshotStore[T]{
 		SnapshotStoreConfig: cfg,
-		tname:               aname,
-		boundedCtx:          bname,
 	}
 
 	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
@@ -48,7 +45,7 @@ func NewSnapshotStore[T any](ctx context.Context, js jetstream.JetStream, cfg Sn
 }
 
 func (s *snapshotStore[T]) snapshotBucketName() string {
-	return fmt.Sprintf("snapshot-%s-%s", s.boundedCtx, s.tname)
+	return fmt.Sprintf("snapshot-%s", typereg.TypeNameFor[T](typereg.WithDelimiter("-")))
 }
 
 func (s *snapshotStore[T]) Save(ctx context.Context, id essrv.ID[T], snap *essrv.Snapshot[T]) error {
