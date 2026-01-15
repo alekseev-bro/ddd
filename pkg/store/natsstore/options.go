@@ -1,7 +1,7 @@
 package natsstore
 
 import (
-	"github.com/alekseev-bro/ddd/pkg/events"
+	"github.com/alekseev-bro/ddd/pkg/aggregate"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -21,7 +21,7 @@ const (
 //type option[T any] func(*options[T])
 
 type NatsAggregateConfig struct {
-	events.AggregateConfig
+	aggregate.AggregateConfig
 	StoreType    StoreType
 	PartitionNum byte
 }

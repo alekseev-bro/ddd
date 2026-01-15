@@ -1,4 +1,4 @@
-package events
+package aggregate
 
 import (
 	"database/sql/driver"
@@ -6,43 +6,51 @@ import (
 	"github.com/google/uuid"
 )
 
-type ID[T any] uuid.UUID
+func NewID() ID {
+	a, err := uuid.NewV7()
+	if err != nil {
+		panic(err)
+	}
+	return ID(a)
+}
 
-func (i ID[T]) IsZero() bool {
+type ID uuid.UUID
+
+func (i ID) IsZero() bool {
 	return uuid.UUID(i) == uuid.Nil
 }
 
-func (i ID[T]) String() string {
+func (i ID) String() string {
 	return uuid.UUID(i).String()
 }
 
-func (id *ID[T]) UnmarshalText(data []byte) error {
+func (id *ID) UnmarshalText(data []byte) error {
 
 	return (*uuid.UUID)(id).UnmarshalText(data)
 }
 
-func (i ID[T]) UUID() uuid.UUID {
+func (i ID) UUID() uuid.UUID {
 
 	return uuid.UUID(i)
 }
 
 // 2. Restore JSON Marshaling (if needed)
-func (id ID[T]) MarshalText() ([]byte, error) {
+func (id ID) MarshalText() ([]byte, error) {
 	return uuid.UUID(id).MarshalText()
 }
 
-func (id *ID[T]) UnmarshalBinary(data []byte) error {
+func (id *ID) UnmarshalBinary(data []byte) error {
 	return (*uuid.UUID)(id).UnmarshalBinary(data)
 }
-func (id ID[T]) MarshalBinary() ([]byte, error) {
+func (id ID) MarshalBinary() ([]byte, error) {
 	return uuid.UUID(id).MarshalBinary()
 }
 
 // 3. Restore Database Compatibility (SQL driver)
-func (id ID[T]) Value() (driver.Value, error) {
+func (id ID) Value() (driver.Value, error) {
 	return uuid.UUID(id).Value()
 }
 
-func (id *ID[T]) Scan(src any) error {
+func (id *ID) Scan(src any) error {
 	return (*uuid.UUID)(id).Scan(src)
 }

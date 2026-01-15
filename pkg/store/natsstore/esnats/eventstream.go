@@ -12,7 +12,7 @@ import (
 	"github.com/alekseev-bro/ddd/internal/typereg"
 	"github.com/alekseev-bro/ddd/pkg/qos"
 
-	"github.com/alekseev-bro/ddd/pkg/events"
+	"github.com/alekseev-bro/ddd/pkg/aggregate"
 
 	"math"
 
@@ -32,14 +32,14 @@ const (
 	Memory
 )
 
-type eventStream[T any] struct {
+type eventStream[T aggregate.Root] struct {
 	EventStreamConfig
 	dedupe time.Duration
 	// TODO: impl partitioning
 	js jetstream.JetStream
 }
 
-func NewEventStream[T any](ctx context.Context, js jetstream.JetStream, cfg EventStreamConfig) *eventStream[T] {
+func NewEventStream[T aggregate.Root](ctx context.Context, js jetstream.JetStream, cfg EventStreamConfig) *eventStream[T] {
 
 	stream := &eventStream[T]{js: js, EventStreamConfig: cfg}
 
@@ -74,7 +74,7 @@ func (s *eventStream[T]) allSubjects() string {
 	return fmt.Sprintf("%s.>", s.streamName())
 }
 
-func (s *eventStream[T]) Save(ctx context.Context, aggrID events.ID[T], msgs []*events.Event[T]) error {
+func (s *eventStream[T]) Save(ctx context.Context, aggrID aggregate.ID, msgs []*aggregate.Event[T]) error {
 
 	if msgs == nil {
 		return nil
@@ -91,7 +91,7 @@ func (s *eventStream[T]) Save(ctx context.Context, aggrID events.ID[T], msgs []*
 		nmsg.Data = b
 		nmsg.Header.Add(jetstream.MsgIDHeader, msg.ID.String())
 		nmsg.Header.Add(jetstream.ExpectedLastSubjSeqSubjHeader, s.allSubjectsForID(aggrID.String()))
-		nmsg.Header.Add(jetstream.ExpectedLastSubjSeqHeader, strconv.Itoa(int(msg.PrevVersion)))
+		nmsg.Header.Add(jetstream.ExpectedLastSubjSeqHeader, strconv.Itoa(int(msg.ExpectedSequence)))
 		nmsgs[i] = nmsg
 	}
 
@@ -100,7 +100,7 @@ func (s *eventStream[T]) Save(ctx context.Context, aggrID events.ID[T], msgs []*
 		if err != nil {
 			var seqerr *jetstream.APIError
 			if errors.As(err, &seqerr); seqerr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence {
-				slog.Warn("occ", "version", msgs[0].PrevVersion, "name", s.subjectNameForID(aggrID.String()))
+				slog.Warn("occ", "version", msgs[0].ExpectedSequence, "name", s.subjectNameForID(aggrID.String()))
 			}
 			return fmt.Errorf("store event func: %w", err)
 		}
@@ -127,7 +127,7 @@ func (s *eventStream[T]) Save(ctx context.Context, aggrID events.ID[T], msgs []*
 	return nil
 }
 
-func (s *eventStream[T]) Load(ctx context.Context, id events.ID[T], version uint64) ([]*events.Event[T], error) {
+func (s *eventStream[T]) Load(ctx context.Context, id aggregate.ID, version uint64) ([]*aggregate.Event[T], error) {
 
 	subj := s.allSubjectsForID(id.String())
 	msgs, err := jetstreamext.GetBatch(ctx,
@@ -138,23 +138,23 @@ func (s *eventStream[T]) Load(ctx context.Context, id events.ID[T], version uint
 	if err != nil {
 		return nil, fmt.Errorf("get events: %w", err)
 	}
-	var evts []*events.Event[T]
-	var prevEv *events.Event[T]
+	var evts []*aggregate.Event[T]
+	var prevEv *aggregate.Event[T]
 	for msg, err := range msgs {
 
 		if err != nil {
 			if errors.Is(err, jetstreamext.ErrNoMessages) {
 
-				return nil, events.ErrNoAggregate
+				return nil, aggregate.ErrNoAggregate
 			}
 			return nil, fmt.Errorf("build func can't get msg batch: %w", err)
 		}
 
 		event := eventFromMsg[T](jsRawMsgAdapter{msg})
 		if prevEv == nil {
-			event.PrevVersion = version
+			event.ExpectedSequence = version
 		} else {
-			event.PrevVersion = prevEv.Version
+			event.ExpectedSequence = prevEv.Version.Sequence
 		}
 
 		prevEv = event
@@ -172,7 +172,7 @@ func (d *drainAdapter) Drain() error {
 	return nil
 }
 
-type drainList []events.Drainer
+type drainList []aggregate.Drainer
 
 func (d drainList) Drain() error {
 	for _, drainer := range d {
@@ -183,7 +183,7 @@ func (d drainList) Drain() error {
 	return nil
 }
 
-func aggrIDFromParams[T any](params *events.SubscribeParams[T]) string {
+func aggrIDFromParams[T aggregate.Root](params *aggregate.SubscribeParams[T]) string {
 	if params.AggrID != "" {
 		return params.AggrID
 	}
@@ -191,7 +191,7 @@ func aggrIDFromParams[T any](params *events.SubscribeParams[T]) string {
 	return "*"
 }
 
-func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *events.Event[T]) error, params *events.SubscribeParams[T]) (events.Drainer, error) {
+func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *aggregate.Event[T]) error, params *aggregate.SubscribeParams[T]) (aggregate.Drainer, error) {
 
 	maxpend := maxAckPending
 	if params.QoS.Ordering == qos.Ordered {
@@ -211,7 +211,7 @@ func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *even
 		for i, f := range filter {
 			sub, err := e.js.Conn().Subscribe(f, func(msg *nats.Msg) {
 
-				var target *events.InvariantViolationError
+				var target *aggregate.InvariantViolationError
 				if err := handler(eventFromMsg[T](natsMessageAdapter{msg})); err != nil {
 					if !errors.As(err, &target) {
 						slog.Warn("redelivering", "error", err)
@@ -252,7 +252,7 @@ func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *even
 		// 	return
 		// }
 
-		var target *events.InvariantViolationError
+		var target *aggregate.InvariantViolationError
 		if err := handler(eventFromMsg[T](natsJSMsgAdapter{msg})); err != nil {
 			if !errors.As(err, &target) {
 				slog.Warn("redelivering", "error", err)

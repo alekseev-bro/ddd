@@ -4,16 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 
-	"github.com/alekseev-bro/ddd/internal/serde"
 	"github.com/alekseev-bro/ddd/internal/typereg"
-	"github.com/alekseev-bro/ddd/pkg/events"
+	"github.com/alekseev-bro/ddd/pkg/aggregate"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-type snapshotStore[T any] struct {
+type snapshotStore[T aggregate.Root] struct {
 	SnapshotStoreConfig
 	kv jetstream.KeyValue
 }
@@ -25,7 +23,7 @@ const (
 	Memory
 )
 
-func NewSnapshotStore[T any](ctx context.Context, js jetstream.JetStream, cfg SnapshotStoreConfig) *snapshotStore[T] {
+func NewSnapshotStore[T aggregate.Root](ctx context.Context, js jetstream.JetStream, cfg SnapshotStoreConfig) *snapshotStore[T] {
 
 	ss := &snapshotStore[T]{
 		SnapshotStoreConfig: cfg,
@@ -47,32 +45,21 @@ func (s *snapshotStore[T]) snapshotBucketName() string {
 	return fmt.Sprintf("snapshot-%s", typereg.TypeNameFor[T](typereg.WithDelimiter("-")))
 }
 
-func (s *snapshotStore[T]) Save(ctx context.Context, id events.ID[T], snap *events.Snapshot[T]) error {
-	b, err := serde.Serialize(snap)
-	if err != nil {
-		slog.Warn("snapshot save serialization", "error", err.Error())
-		return err
-	}
-	_, err = s.kv.Put(ctx, id.String(), b)
+func (s *snapshotStore[T]) Save(ctx context.Context, key []byte, value []byte) error {
+
+	_, err := s.kv.Put(ctx, string(key), value)
 	return err
 }
 
-func (s *snapshotStore[T]) Load(ctx context.Context, id events.ID[T]) (*events.Snapshot[T], error) {
+func (s *snapshotStore[T]) Load(ctx context.Context, key []byte) ([]byte, error) {
 
-	v, err := s.kv.Get(ctx, id.String())
+	v, err := s.kv.Get(ctx, string(key))
 	if err != nil {
 		if errors.Is(err, jetstream.ErrKeyNotFound) {
-			return nil, events.ErrNoSnapshot
+			return nil, aggregate.ErrNoSnapshot
 		}
 		return nil, err
 	}
 
-	var snap events.Snapshot[T]
-
-	if err := serde.Deserialize(v.Value(), &snap); err != nil {
-		slog.Error("load snapshot deserialize", "error", err)
-		panic(fmt.Errorf("load snapshot: %w", err))
-	}
-
-	return &snap, nil
+	return v.Value(), nil
 }
