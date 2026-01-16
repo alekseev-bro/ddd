@@ -1,30 +1,55 @@
 package aggregate
 
 import (
+	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/alekseev-bro/ddd/internal/serde"
-	"github.com/alekseev-bro/ddd/internal/typereg"
+	"github.com/alekseev-bro/ddd/pkg/codec"
 )
 
-type AggregateConfig struct {
+type storeConfig struct {
 	SnapthotMsgThreshold byte
 	SnapshotMaxInterval  time.Duration
 }
 
-type RegisteredEvent[T Root, PT PRoot[T]] func(a *store[T, PT])
+type StoreOption[T any, PT PRoot[T]] func(a *store[T, PT])
 
-func WithEvent[E Evolver[T], T Root, PT PRoot[T]](name string) RegisteredEvent[T, PT] {
+func WithEvent[E any, T any, PE interface {
+	*E
+	Evolver[T]
+}, PT PRoot[T]](name string) StoreOption[T, PT] {
 
+	if reflect.TypeFor[E]().Kind() != reflect.Struct {
+		panic(fmt.Sprintf("event '%s' must be a struct and not a pointer", reflect.TypeFor[E]().Elem().Name()))
+	}
 	return func(a *store[T, PT]) {
-		var zero E
-		ct := func(b []byte) any {
-			serde.Deserialize(b, &zero)
-			return zero
-		}
+
 		if name == "" {
-			name = typereg.TypeNameFor[E]()
+			name = reflect.TypeFor[E]().Name()
 		}
-		typereg.Register[E](name, ct)
+
+		a.eventRegistry.Register(name, func() any { return PE(new(E)) })
+	}
+}
+
+func WithSnapshot[T any, PT PRoot[T]](maxMsgs byte, maxInterval time.Duration) StoreOption[T, PT] {
+	return func(a *store[T, PT]) {
+		a.storeConfig = storeConfig{
+			SnapthotMsgThreshold: maxMsgs,
+			SnapshotMaxInterval:  maxInterval,
+		}
+	}
+}
+func WithEventCodec[T any, PT PRoot[T]](codec codec.Codec) StoreOption[T, PT] {
+	return func(a *store[T, PT]) {
+		a.eventSerder = serde.NewSerder[Evolver[T]](a.eventRegistry, codec)
+	}
+}
+
+func WithSnapshotCodec[T any, PT PRoot[T]](codec codec.Codec) StoreOption[T, PT] {
+	return func(a *store[T, PT]) {
+		a.snapshotCodec = codec
 	}
 }

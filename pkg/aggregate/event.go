@@ -2,15 +2,15 @@ package aggregate
 
 import "context"
 
-type Evolver[T Root] interface {
+type Evolver[T any] interface {
 	Evolve(*T)
 }
 
-func NewEvents[T Root](events ...Evolver[T]) Events[T] {
+func NewEvents[T any](events ...Evolver[T]) Events[T] {
 	return events
 }
 
-type Events[T Root] []Evolver[T]
+type Events[T any] []Evolver[T]
 
 func (e Events[T]) Evolve(aggr *T) {
 	for _, ev := range e {
@@ -33,16 +33,13 @@ func ContextWithIdempotancyKey(ctx context.Context, key string) context.Context 
 	return context.WithValue(ctx, idempKeyCtx, key)
 }
 
-type Event[T Root] struct {
-	ID               ID
-	AggregateID      ID
-	ExpectedSequence uint64
-	Kind             string
-	Version
-	Body Evolver[T]
+type Event[T any] struct {
+	ID      ID
+	Kind    string
+	Version uint64
+	Body    Evolver[T]
 }
 
 func (e *Event[T]) Evolve(aggr *T) {
-
 	e.Body.Evolve(aggr)
 }

@@ -5,13 +5,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/alekseev-bro/ddd/internal/typereg"
 	"github.com/alekseev-bro/ddd/pkg/aggregate"
 
 	"github.com/nats-io/nats.go/jetstream"
 )
 
-type snapshotStore[T aggregate.Root] struct {
+type snapshotStore struct {
 	SnapshotStoreConfig
 	kv jetstream.KeyValue
 }
@@ -23,14 +22,14 @@ const (
 	Memory
 )
 
-func NewSnapshotStore[T aggregate.Root](ctx context.Context, js jetstream.JetStream, cfg SnapshotStoreConfig) *snapshotStore[T] {
+func NewSnapshotStore(ctx context.Context, js jetstream.JetStream, name string, cfg SnapshotStoreConfig) *snapshotStore {
 
-	ss := &snapshotStore[T]{
+	ss := &snapshotStore{
 		SnapshotStoreConfig: cfg,
 	}
 
 	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
-		Bucket:  ss.snapshotBucketName(),
+		Bucket:  ss.snapshotBucketName(name),
 		Storage: jetstream.StorageType(ss.StoreType),
 	})
 	if err != nil {
@@ -41,17 +40,17 @@ func NewSnapshotStore[T aggregate.Root](ctx context.Context, js jetstream.JetStr
 	return ss
 }
 
-func (s *snapshotStore[T]) snapshotBucketName() string {
-	return fmt.Sprintf("snapshot-%s", typereg.TypeNameFor[T](typereg.WithDelimiter("-")))
+func (s *snapshotStore) snapshotBucketName(name string) string {
+	return fmt.Sprintf("snapshot-%s", name)
 }
 
-func (s *snapshotStore[T]) Save(ctx context.Context, key []byte, value []byte) error {
+func (s *snapshotStore) Save(ctx context.Context, key []byte, value []byte) error {
 
 	_, err := s.kv.Put(ctx, string(key), value)
 	return err
 }
 
-func (s *snapshotStore[T]) Load(ctx context.Context, key []byte) ([]byte, error) {
+func (s *snapshotStore) Load(ctx context.Context, key []byte) ([]byte, error) {
 
 	v, err := s.kv.Get(ctx, string(key))
 	if err != nil {

@@ -8,8 +8,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/alekseev-bro/ddd/internal/serde"
-	"github.com/alekseev-bro/ddd/internal/typereg"
 	"github.com/alekseev-bro/ddd/pkg/qos"
 
 	"github.com/alekseev-bro/ddd/pkg/aggregate"
@@ -32,22 +30,28 @@ const (
 	Memory
 )
 
-type eventStream[T aggregate.Root] struct {
+type eventStream struct {
+	name string
 	EventStreamConfig
-	dedupe time.Duration
 	// TODO: impl partitioning
 	js jetstream.JetStream
 }
 
-func NewEventStream[T aggregate.Root](ctx context.Context, js jetstream.JetStream, cfg EventStreamConfig) *eventStream[T] {
+const (
+	defaultDeduplication time.Duration = time.Minute * 2
+)
 
-	stream := &eventStream[T]{js: js, EventStreamConfig: cfg}
+func NewEventStream(ctx context.Context, js jetstream.JetStream, name string, cfg EventStreamConfig) *eventStream {
+	if cfg.Deduplication == 0 {
+		cfg.Deduplication = defaultDeduplication
+	}
+	stream := &eventStream{name: name, js: js, EventStreamConfig: cfg}
 
 	_, err := stream.js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Subjects:           []string{stream.allSubjects()},
-		Name:               stream.streamName(),
-		Storage:            jetstream.StorageType(stream.StoreType),
-		Duplicates:         stream.dedupe,
+		Name:               name,
+		Storage:            jetstream.StorageType(cfg.StoreType),
+		Duplicates:         cfg.Deduplication,
 		AllowDirect:        true,
 		AllowAtomicPublish: true,
 	})
@@ -59,39 +63,31 @@ func NewEventStream[T aggregate.Root](ctx context.Context, js jetstream.JetStrea
 	return stream
 }
 
-func (s *eventStream[T]) subjectNameForID(agrid string) string {
-	return fmt.Sprintf("%s.%s", typereg.TypeNameFor[T](), agrid)
+func (s *eventStream) subjectNameForID(agrid string) string {
+	return fmt.Sprintf("%s.%s", s.name, agrid)
 }
-func (s *eventStream[T]) allSubjectsForID(agrid string) string {
-	return fmt.Sprintf("%s.%s.>", typereg.TypeNameFor[T](), agrid)
-}
-
-func (s *eventStream[T]) streamName() string {
-	return typereg.TypeNameFor[T]()
+func (s *eventStream) allSubjectsForID(agrid string) string {
+	return fmt.Sprintf("%s.%s.>", s.name, agrid)
 }
 
-func (s *eventStream[T]) allSubjects() string {
-	return fmt.Sprintf("%s.>", s.streamName())
+func (s *eventStream) allSubjects() string {
+	return fmt.Sprintf("%s.>", s.name)
 }
 
-func (s *eventStream[T]) Save(ctx context.Context, aggrID aggregate.ID, msgs []*aggregate.Event[T]) error {
+func (s *eventStream) Save(ctx context.Context, aggrID aggregate.ID, expectedSequence uint64, msgs []aggregate.Msg) ([]*aggregate.StoredMsg, error) {
 
 	if msgs == nil {
-		return nil
+		return nil, nil
 	}
 	nmsgs := make([]*nats.Msg, len(msgs))
 	for i, msg := range msgs {
 		sub := fmt.Sprintf("%s.%s", s.subjectNameForID(aggrID.String()), msg.Kind)
 		nmsg := nats.NewMsg(sub)
-		b, err := serde.Serialize(msg.Body)
-		if err != nil {
-			slog.Error("command serialize", "error", err)
-			panic(err)
-		}
-		nmsg.Data = b
+
+		nmsg.Data = msg.Body
 		nmsg.Header.Add(jetstream.MsgIDHeader, msg.ID.String())
 		nmsg.Header.Add(jetstream.ExpectedLastSubjSeqSubjHeader, s.allSubjectsForID(aggrID.String()))
-		nmsg.Header.Add(jetstream.ExpectedLastSubjSeqHeader, strconv.Itoa(int(msg.ExpectedSequence)))
+		nmsg.Header.Add(jetstream.ExpectedLastSubjSeqHeader, strconv.Itoa(int(expectedSequence)))
 		nmsgs[i] = nmsg
 	}
 
@@ -100,46 +96,56 @@ func (s *eventStream[T]) Save(ctx context.Context, aggrID aggregate.ID, msgs []*
 		if err != nil {
 			var seqerr *jetstream.APIError
 			if errors.As(err, &seqerr); seqerr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence {
-				slog.Warn("occ", "version", msgs[0].ExpectedSequence, "name", s.subjectNameForID(aggrID.String()))
+				slog.Warn("occ", "version", expectedSequence, "name", s.subjectNameForID(aggrID.String()))
 			}
-			return fmt.Errorf("store event func: %w", err)
+			return nil, fmt.Errorf("store event func: %w", err)
 		}
 		if ack.Duplicate {
-			slog.Warn("duplicate event not stored", "kind", msgs[0].Kind, "subject", s.subjectNameForID(aggrID.String()), "stream", s.streamName())
-			return nil
+			slog.Warn("duplicate event not stored", "kind", msgs[0].Kind, "subject", s.subjectNameForID(aggrID.String()), "stream", s.name)
+			return nil, nil
 		}
-		slog.Info("event stored", "kind", msgs[0].Kind, "subject", s.subjectNameForID(aggrID.String()), "stream", s.streamName())
-		return nil
+
+		slog.Info("event stored", "kind", msgs[0].Kind, "subject", s.subjectNameForID(aggrID.String()), "stream", s.name)
+		msgs := []*aggregate.StoredMsg{
+			&aggregate.StoredMsg{
+				Msg: aggregate.Msg{ID: aggrID, Kind: msgs[0].Kind}, Version: aggregate.Version{Sequence: ack.Sequence},
+			}}
+
+		return msgs, nil
 	}
 
-	_, err := jetstreamext.PublishMsgBatch(ctx, s.js, nmsgs, jetstreamext.BatchFlowControl{AckEvery: 1, AckTimeout: time.Second})
+	batchAck, err := jetstreamext.PublishMsgBatch(ctx, s.js, nmsgs, jetstreamext.BatchFlowControl{AckEvery: 1, AckTimeout: time.Second})
 	if err != nil {
 		var seqerr *jetstream.APIError
 		if errors.As(err, &seqerr); seqerr.ErrorCode == jetstream.JSErrCodeStreamWrongLastSequence {
 			slog.Warn("occ", "name", s.subjectNameForID(aggrID.String()))
 		}
-		return fmt.Errorf("save: %w", err)
+		return nil, fmt.Errorf("save: %w", err)
+	}
+	outmsgs := make([]*aggregate.StoredMsg, len(msgs))
+	for i, msg := range msgs {
+
+		outmsgs[i] = &aggregate.StoredMsg{
+			Msg: aggregate.Msg{ID: aggrID, Kind: msgs[0].Kind}, Version: aggregate.Version{Sequence: batchAck.Sequence},
+		}
+		slog.Info("event stored", "kind", msg.Kind, "subject", s.subjectNameForID(aggrID.String()), "stream", s.name)
 	}
 
-	for _, msg := range msgs {
-		slog.Info("event stored", "kind", msg.Kind, "subject", s.subjectNameForID(aggrID.String()), "stream", s.streamName())
-	}
-	return nil
+	return outmsgs, nil
 }
 
-func (s *eventStream[T]) Load(ctx context.Context, id aggregate.ID, version uint64) ([]*aggregate.Event[T], error) {
+func (s *eventStream) Load(ctx context.Context, aggrID aggregate.ID, fromSeq uint64) ([]*aggregate.StoredMsg, error) {
 
-	subj := s.allSubjectsForID(id.String())
+	subj := s.allSubjectsForID(aggrID.String())
 	msgs, err := jetstreamext.GetBatch(ctx,
-		s.js, s.streamName(), math.MaxInt, jetstreamext.GetBatchSubject(subj),
-		jetstreamext.GetBatchSeq(version+1))
+		s.js, s.name, math.MaxInt, jetstreamext.GetBatchSubject(subj),
+		jetstreamext.GetBatchSeq(fromSeq+1))
 	//fmt.Println(time.Since(start))
 
 	if err != nil {
 		return nil, fmt.Errorf("get events: %w", err)
 	}
-	var evts []*aggregate.Event[T]
-	var prevEv *aggregate.Event[T]
+	var evts []*aggregate.StoredMsg
 	for msg, err := range msgs {
 
 		if err != nil {
@@ -150,16 +156,11 @@ func (s *eventStream[T]) Load(ctx context.Context, id aggregate.ID, version uint
 			return nil, fmt.Errorf("build func can't get msg batch: %w", err)
 		}
 
-		event := eventFromMsg[T](jsRawMsgAdapter{msg})
-		if prevEv == nil {
-			event.ExpectedSequence = version
-		} else {
-			event.ExpectedSequence = prevEv.Version.Sequence
-		}
+		event := eventFromMsg(jsRawMsgAdapter{msg})
 
-		prevEv = event
 		evts = append(evts, event)
 	}
+
 	return evts, nil
 }
 
@@ -183,7 +184,7 @@ func (d drainList) Drain() error {
 	return nil
 }
 
-func aggrIDFromParams[T aggregate.Root](params *aggregate.SubscribeParams[T]) string {
+func aggrIDFromParams(params *aggregate.SubscribeParams) string {
 	if params.AggrID != "" {
 		return params.AggrID
 	}
@@ -191,7 +192,7 @@ func aggrIDFromParams[T aggregate.Root](params *aggregate.SubscribeParams[T]) st
 	return "*"
 }
 
-func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *aggregate.Event[T]) error, params *aggregate.SubscribeParams[T]) (aggregate.Drainer, error) {
+func (e *eventStream) Subscribe(ctx context.Context, handler func(msg *aggregate.StoredMsg) error, params *aggregate.SubscribeParams) (aggregate.Drainer, error) {
 
 	maxpend := maxAckPending
 	if params.QoS.Ordering == qos.Ordered {
@@ -201,10 +202,10 @@ func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *aggr
 	var filter []string
 	if params.Kind != nil {
 		for _, kind := range params.Kind {
-			filter = append(filter, fmt.Sprintf("%s.%s.%s", e.streamName(), aggrIDFromParams(params), kind))
+			filter = append(filter, fmt.Sprintf("%s.%s.%s", e.name, aggrIDFromParams(params), kind))
 		}
 	} else {
-		filter = append(filter, fmt.Sprintf("%s.%s.%s", e.streamName(), aggrIDFromParams(params), "*"))
+		filter = append(filter, fmt.Sprintf("%s.%s.%s", e.name, aggrIDFromParams(params), "*"))
 	}
 	if params.QoS.Delivery == qos.AtMostOnce {
 		subs := make(drainList, len(filter))
@@ -212,7 +213,7 @@ func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *aggr
 			sub, err := e.js.Conn().Subscribe(f, func(msg *nats.Msg) {
 
 				var target *aggregate.InvariantViolationError
-				if err := handler(eventFromMsg[T](natsMessageAdapter{msg})); err != nil {
+				if err := handler(eventFromMsg(natsMessageAdapter{msg})); err != nil {
 					if !errors.As(err, &target) {
 						slog.Warn("redelivering", "error", err)
 						msg.Nak()
@@ -232,7 +233,7 @@ func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *aggr
 
 		return subs, nil
 	}
-	cons, err := e.js.CreateOrUpdateConsumer(ctx, e.streamName(), jetstream.ConsumerConfig{
+	cons, err := e.js.CreateOrUpdateConsumer(ctx, e.name, jetstream.ConsumerConfig{
 		Durable:        params.DurableName,
 		FilterSubjects: filter,
 		DeliverPolicy:  jetstream.DeliverAllPolicy,
@@ -253,7 +254,7 @@ func (e *eventStream[T]) Subscribe(ctx context.Context, handler func(event *aggr
 		// }
 
 		var target *aggregate.InvariantViolationError
-		if err := handler(eventFromMsg[T](natsJSMsgAdapter{msg})); err != nil {
+		if err := handler(eventFromMsg(natsJSMsgAdapter{msg})); err != nil {
 			if !errors.As(err, &target) {
 				slog.Warn("redelivering", "error", err)
 				msg.Nak()

@@ -1,8 +1,11 @@
 package esnats
 
+import "time"
+
 type EventStreamConfig struct {
-	StoreType    StoreType
-	PartitionNum byte
+	StoreType     StoreType
+	PartitionNum  byte
+	Deduplication time.Duration
 }
 
 // type Option func(*EventStreamConfig)

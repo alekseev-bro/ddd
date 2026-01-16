@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/alekseev-bro/ddd/internal/typereg"
 	"github.com/alekseev-bro/ddd/pkg/aggregate"
 
 	"github.com/google/uuid"
@@ -104,7 +103,7 @@ func (n natsJSMsgAdapter) Seq() uint64 {
 	return mt.Sequence.Stream
 }
 
-func eventFromMsg[T aggregate.Root](msg natsMessage) *aggregate.Event[T] {
+func eventFromMsg(msg natsMessage) *aggregate.StoredMsg {
 
 	mid, err := uuid.Parse(msg.Headers().Get(jetstream.MsgIDHeader))
 	if err != nil {
@@ -113,19 +112,15 @@ func eventFromMsg[T aggregate.Root](msg natsMessage) *aggregate.Event[T] {
 	}
 	subjectParts := strings.Split(msg.Subject(), ".")
 	kind := subjectParts[2]
-	aggregateID, err := uuid.Parse(subjectParts[1])
-	if err != nil {
-		slog.Error("failed to parse uuid", "error", err)
-		panic("failed to parse uuid")
-	}
 
-	ev := typereg.GetType(kind, msg.Data())
+	//	ev := typereg.GetType(kind, msg.Data())
 
-	return &aggregate.Event[T]{
-		ID:          aggregate.ID(mid),
-		AggregateID: aggregate.ID(aggregateID),
-		Kind:        kind,
-		Version:     aggregate.Version{Sequence: msg.Seq(), Timestamp: msg.Timestamp()},
-		Body:        ev.(aggregate.Evolver[T]),
+	return &aggregate.StoredMsg{
+		Msg: aggregate.Msg{
+			ID:   aggregate.ID(mid),
+			Kind: kind,
+			Body: msg.Data(),
+		},
+		Version: aggregate.Version{Sequence: msg.Seq(), Timestamp: msg.Timestamp()},
 	}
 }
