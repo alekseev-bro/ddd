@@ -239,11 +239,14 @@ func (e *eventStream) Subscribe(ctx context.Context, handler func(msg *aggregate
 		DeliverPolicy:  jetstream.DeliverAllPolicy,
 		AckPolicy:      jetstream.AckExplicitPolicy,
 		MaxAckPending:  maxpend,
+		PriorityPolicy: jetstream.PriorityPolicyPinned,
+		PriorityGroups: []string{"sub"},
 	})
 	if err != nil {
 		slog.Error("subscription create consumer", "error", err)
 		panic(err)
 	}
+
 	ct, err := cons.Consume(func(msg jetstream.Msg) {
 		// mt, err := msg.Metadata()
 		// if err != nil {
@@ -265,7 +268,9 @@ func (e *eventStream) Subscribe(ctx context.Context, handler func(msg *aggregate
 		}
 		msg.Ack()
 
-	}, jetstream.ConsumeErrHandler(func(consumeCtx jetstream.ConsumeContext, err error) {}))
+	}, jetstream.ConsumeErrHandler(func(consumeCtx jetstream.ConsumeContext, err error) {
+		slog.Error("subscription consume", "error", err)
+	}), jetstream.PullPriorityGroup("sub"))
 	if err != nil {
 		panic(fmt.Errorf("subscription consume: %w", err))
 	}
