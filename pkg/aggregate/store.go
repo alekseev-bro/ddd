@@ -70,11 +70,11 @@ func NewStore[T any, PT PRoot[T]](ctx context.Context, es eventStream, ss snapsh
 	return aggr
 }
 
-// Updater is an interface that defines the Update method for executing commands on an aggregate.
+// Mutator is an interface that defines the Update method for executing commands on an aggregate.
 // Each command is executed in a transactional manner, ensuring that the aggregate state is consistent.
 // Commands must implement the Executer interface.
-type Updater[T any, PT PRoot[T]] interface {
-	Update(ctx context.Context, id ID, modify func(state PT) (Events[T], error)) ([]*Event[T], error)
+type Mutator[T any, PT PRoot[T]] interface {
+	Mutate(ctx context.Context, id ID, modify func(state PT) (Events[T], error)) ([]*Event[T], error)
 }
 
 // type Creator[T Root] interface {
@@ -102,7 +102,7 @@ type Subscriber[T any] interface {
 // All aggregates must implement the Store interface.
 type Store[T any, PT PRoot[T]] interface {
 	Subscriber[T]
-	Updater[T, PT]
+	Mutator[T, PT]
 }
 
 // Use to drain all open connections
@@ -210,7 +210,7 @@ func (a *store[T, PT]) build(ctx context.Context, id ID, sn *repo.Snapshot) (*ag
 // }
 
 // Update executes a command on the aggregate root.
-func (a *store[T, PT]) Update(
+func (a *store[T, PT]) Mutate(
 	ctx context.Context, id ID,
 	modify func(state PT) (Events[T], error),
 
@@ -219,7 +219,6 @@ func (a *store[T, PT]) Update(
 	var err error
 	var invError error
 	var aggr *aggregate[PT]
-	// if id.String() != idempKey {
 	sn := new(repo.Snapshot)
 	sn, err = a.ss.Load(ctx, []byte(id.String()))
 	if err != nil {
