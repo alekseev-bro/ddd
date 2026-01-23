@@ -66,7 +66,7 @@ func WithQoS[T any](qos qos.QoS) ProjOption {
 
 func Project[E Evolver[T], T any](ctx context.Context, sub Subscriber[T], h EventHandler[T, E]) (Drainer, error) {
 
-	n := fmt.Sprintf("handler-%s", typereg.TypeNameFrom(h))
+	n := fmt.Sprintf("%s", typereg.TypeNameFrom(h))
 
 	return sub.Subscribe(ctx, &handleEventAdapter[E, T]{h: h}, WithFilterByEvent[E](), WithName[T](n))
 

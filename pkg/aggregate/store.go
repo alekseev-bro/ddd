@@ -81,7 +81,7 @@ type Updater[T any, PT PRoot[T]] interface {
 // }
 
 type CommandHandler[T any, C any] interface {
-	Handle(ctx context.Context, cmd C) ([]*Event[T], error)
+	HandleCommand(ctx context.Context, cmd C) ([]*Event[T], error)
 }
 
 type EventHandler[T any, E Evolver[T]] interface {

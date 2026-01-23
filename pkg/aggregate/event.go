@@ -33,6 +33,10 @@ func ContextWithIdempotancyKey(ctx context.Context, key string) context.Context 
 	return context.WithValue(ctx, idempKeyCtx, key)
 }
 
+func IdempotancyKeyFromContext(ctx context.Context) string {
+	return ctx.Value(idempKeyCtx).(string)
+}
+
 type Event[T any] struct {
 	ID      ID
 	Kind    string
